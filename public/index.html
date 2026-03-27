@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClawBox - 一键部署 OpenClaw</title>
+  <meta name="theme-color" content="#0d1320">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="page-glow page-glow-a" aria-hidden="true"></div>
+  <div class="page-glow page-glow-b" aria-hidden="true"></div>
+  <div class="container">
+    <!-- 头部 -->
+    <header class="header">
+      <div class="hero-mark">OpenClaw Control Surface</div>
+      <div class="logo">ClawBox</div>
+      <div class="subtitle">更快部署，更稳定管理，更清晰地掌控网关、模型与通道配置</div>
+      <div class="hero-tags">
+        <span class="hero-tag">Gateway</span>
+        <span class="hero-tag">Models</span>
+        <span class="hero-tag">Channels</span>
+        <span class="hero-tag">Skills</span>
+      </div>
+    </header>
+
+    <!-- 状态卡片 -->
+    <section class="status-card" id="statusCard">
+      <div class="status-item">
+        <span class="label">系统</span>
+        <span class="value" id="osInfo">检测中...</span>
+      </div>
+      <div class="status-item">
+        <span class="label">Node.js</span>
+        <span class="value" id="nodeInfo">检测中...</span>
+      </div>
+      <div class="status-item">
+        <span class="label">OpenClaw</span>
+        <span class="value" id="openclawInfo">检测中...</span>
+      </div>
+      <div class="status-item">
+        <span class="label">网关</span>
+        <span class="value" id="gatewayInfo">检测中...</span>
+      </div>
+    </section>
+
+    <!-- 标签页 -->
+    <nav class="tabs">
+      <button class="tab active" data-tab="install">安装</button>
+      <button class="tab" data-tab="model">模型配置</button>
+      <button class="tab" data-tab="feishu">飞书通道</button>
+      <button class="tab" data-tab="skills">Skills</button>
+      <button class="tab" data-tab="tools">工具</button>
+    </nav>
+
+    <!-- 安装面板 -->
+    <section class="panel active" id="panel-install">
+      <div class="card">
+        <div class="section-kicker">Deployment</div>
+        <h2>安装 OpenClaw</h2>
+        <p class="desc">通过官方脚本一键安装，自动处理 Node.js 和所有依赖</p>
+
+        <div class="install-info" id="installInfo">
+          <div class="info-item" id="rootHint" style="display:none">
+            <span class="info-badge">🔓 Root 模式</span>
+            <span class="info-text">全程无需输入密码</span>
+          </div>
+          <div class="info-item" id="sudoHint" style="display:none">
+            <span class="info-badge">👤 普通用户</span>
+            <span class="info-text">安装时可能需要输入一次 sudo 密码</span>
+          </div>
+        </div>
+
+        <div id="installActions">
+          <button class="btn btn-primary" id="btnInstall" onclick="startInstall()">
+            一键安装
+          </button>
+          <button class="btn btn-secondary" id="btnUpdate" onclick="startUpdate()" style="display:none">
+            检查更新
+          </button>
+          <button class="btn btn-danger" id="btnUninstall" onclick="confirmUninstall()" style="display:none">
+            卸载
+          </button>
+        </div>
+
+        <div class="install-log" id="installLog" style="display:none">
+          <div id="installSteps"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 模型配置面板 -->
+    <section class="panel" id="panel-model">
+      <div class="card">
+        <div class="section-kicker">Models</div>
+        <h2>模型配置</h2>
+        <p class="desc">配置 AI 模型的 API 密钥和模型选择</p>
+
+        <div class="form-group">
+          <label>模型提供商</label>
+          <select id="modelProvider" onchange="onProviderChange()">
+            <option value="mimo">MIMO（推荐）</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="google">Google Gemini</option>
+            <option value="anthropic">Anthropic Claude</option>
+            <option value="openai">OpenAI</option>
+            <option value="custom">自定义</option>
+          </select>
+        </div>
+
+        <div class="form-group" id="mimoTierGroup">
+          <label>模型档位</label>
+          <div class="tier-selector" id="tierSelector">
+            <div class="tier-card" data-tier="omni" onclick="selectTier('omni')">
+              <div class="tier-name">Omni</div>
+              <div class="tier-desc">最强 · 全模态</div>
+            </div>
+            <div class="tier-card active" data-tier="pro" onclick="selectTier('pro')">
+              <div class="tier-name">Pro</div>
+              <div class="tier-desc">平衡 · 推荐日常</div>
+            </div>
+            <div class="tier-card" data-tier="flash" onclick="selectTier('flash')">
+              <div class="tier-name">Flash</div>
+              <div class="tier-desc">最快 · 轻量任务</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group" id="modelSelectGroup">
+          <label>模型</label>
+          <select id="modelSelect"></select>
+        </div>
+
+        <div class="form-group">
+          <label>API Key</label>
+          <input type="password" id="apiKey" placeholder="输入你的 API Key">
+          <div class="hint" id="apiKeyPreview"></div>
+        </div>
+
+        <div class="form-group" id="baseUrlGroup" style="display:none">
+          <label>API Base URL</label>
+          <input type="text" id="baseUrl" placeholder="https://api.example.com/v1">
+        </div>
+
+        <button class="btn btn-primary" onclick="saveModelConfig()">
+          保存配置
+        </button>
+        <span id="modelSaveMsg" class="save-msg"></span>
+      </div>
+    </section>
+
+    <!-- 飞书通道面板 -->
+    <section class="panel" id="panel-feishu">
+      <div class="card">
+        <div class="section-kicker">Channel</div>
+        <h2>飞书消息通道</h2>
+        <p class="desc">输入飞书机器人的凭证即可接入</p>
+
+        <div class="form-group">
+          <label>App ID</label>
+          <input type="text" id="feishuAppId" placeholder="cli_xxxxxxxxxxxx">
+        </div>
+
+        <div class="form-group">
+          <label>App Secret</label>
+          <input type="password" id="feishuAppSecret" placeholder="输入 App Secret">
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="feishuStreaming" checked>
+            启用 Streaming 模式（实时回复）
+          </label>
+        </div>
+
+        <button class="btn btn-primary" onclick="saveFeishuConfig()">
+          保存配置
+        </button>
+        <span id="feishuSaveMsg" class="save-msg"></span>
+      </div>
+    </section>
+
+    <!-- 工具面板 -->
+    <section class="panel" id="panel-tools">
+      <div class="card">
+        <div class="section-kicker">Runtime</div>
+        <h2>依赖管理</h2>
+        <p class="desc">管理 ClawBox 的运行环境和依赖</p>
+
+        <div class="tool-list">
+          <div class="tool-item">
+            <div class="tool-info">
+              <h4>Node.js</h4>
+              <p class="tool-status" id="toolNodeStatus">检测中...</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn btn-secondary btn-sm" onclick="uninstallNode()">卸载</button>
+            </div>
+          </div>
+
+          <div class="tool-item">
+            <div class="tool-info">
+              <h4>ClawHub CLI</h4>
+              <p class="tool-status" id="toolClawhubStatus">检测中...</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn btn-secondary btn-sm" onclick="uninstallClawhub()">卸载</button>
+            </div>
+          </div>
+
+          <div class="tool-item">
+            <div class="tool-info">
+              <h4>OpenClaw</h4>
+              <p class="tool-status" id="toolOpenclawStatus">检测中...</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn btn-primary btn-sm" onclick="openOpenclawDashboard()">打开面板</button>
+              <button class="btn btn-secondary btn-sm" onclick="uninstallOpenclawTool()">卸载</button>
+            </div>
+          </div>
+
+          <div class="tool-item">
+            <div class="tool-info">
+              <h4>ClawBox</h4>
+              <p class="tool-status">当前程序</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn btn-danger btn-sm" onclick="uninstallClawBox()">卸载</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="tool-log" id="toolLog" style="display:none">
+          <div id="toolLogContent"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Skills 面板 -->
+    <section class="panel" id="panel-skills">
+      <div class="card">
+        <div class="section-kicker">Extensions</div>
+        <h2>Skills 市场</h2>
+        <p class="desc">搜索并安装 ClawHub 上的 OpenClaw 技能</p>
+
+        <div class="search-bar">
+          <input type="text" id="skillSearch" placeholder="搜索 Skills..." onkeyup="onSkillSearchKeyup(event)">
+          <button class="btn btn-secondary" onclick="searchSkills()">搜索</button>
+        </div>
+
+        <div id="skillResults" class="skill-grid">
+          <div class="empty-state">输入关键词搜索 ClawHub 上的 Skills</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 底部 -->
+    <footer class="footer">
+      <div class="footer-note">网关维护操作</div>
+      <button class="btn btn-ghost" onclick="restartGateway()">🔄 重启网关</button>
+      <span id="restartMsg" class="save-msg"></span>
+    </footer>
+  </div>
+
+  <!-- 卸载确认弹窗 -->
+  <div class="modal-overlay" id="uninstallModal" style="display:none">
+    <div class="modal">
+      <h3>⚠️ 确认卸载 OpenClaw</h3>
+      <p>这将卸载 OpenClaw，但保留 <code>~/.openclaw/</code> 配置文件。</p>
+      <p>确定要继续吗？</p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeUninstallModal()">取消</button>
+        <button class="btn btn-danger" onclick="startUninstall()">确认卸载</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>

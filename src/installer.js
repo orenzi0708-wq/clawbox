@@ -134,9 +134,22 @@ function getOS() {
  */
 function isOpenClawInstalled() {
   try {
+    // 先检查可执行文件是否存在且指向真实文件
+    const whichResult = execSync('which openclaw 2>/dev/null || echo ""', {
+      encoding: 'utf8', timeout: 5000
+    }).trim();
+    if (!whichResult) return false;
+
+    // 检查文件是否指向真实存在的文件（处理悬空软链接）
+    const realPath = execSync(`readlink -f "${whichResult}" 2>/dev/null || echo "${whichResult}"`, {
+      encoding: 'utf8', timeout: 5000
+    }).trim();
+    const fs = require('fs');
+    if (!fs.existsSync(realPath)) return false;
+
+    // 最后验证命令是否能正常执行
     const result = execSync('openclaw --version 2>/dev/null || echo "not_found"', {
-      encoding: 'utf8',
-      timeout: 5000
+      encoding: 'utf8', timeout: 5000
     });
     return !result.includes('not_found') && !result.includes('command not found');
   } catch {
@@ -326,7 +339,16 @@ async function installOpenClaw(onProgress) {
       report('init_config', 'done', 'Gateway 配置跳过（可稍后手动设置）');
     }
 
-    // Step 6: 验证安装
+    // Step 6: 注册 Gateway 服务
+    report('install_gateway', 'running', '注册 Gateway 服务...');
+    try {
+      execSync('openclaw gateway install', { encoding: 'utf8', timeout: 30000 });
+      report('install_gateway', 'done', 'Gateway 服务已注册 ✓');
+    } catch {
+      report('install_gateway', 'done', 'Gateway 服务注册跳过（可稍后手动执行 openclaw gateway install）');
+    }
+
+    // Step 7: 验证安装
     report('verify', 'running', '验证安装...');
     try {
       const version = execSync('openclaw --version 2>/dev/null', {
@@ -385,20 +407,89 @@ async function uninstallOpenClaw(onProgress) {
     if (onProgress) onProgress({ name: 'heartbeat', status: 'ping', detail: '保持连接...', steps: [...steps] });
   }, 5000);
 
+  // 检测函数：openclaw 是否还存在
+  const isOpenClawGone = () => {
+    try {
+      const which = execSync('which openclaw 2>/dev/null || echo ""', { encoding: 'utf8', timeout: 5000 }).trim();
+      if (!which) return true; // 找不到说明已卸载
+      // 检查是否是悬空软链接
+      const realPath = execSync(`readlink -f "${which}" 2>/dev/null || echo "${which}"`, { encoding: 'utf8', timeout: 5000 }).trim();
+      return !fs.existsSync(realPath);
+    } catch {
+      return true;
+    }
+  };
+
   try {
-    report('uninstall', 'running', '执行 OpenClaw 卸载...');
-    const output = await new Promise((resolve, reject) => {
-      exec('openclaw uninstall --all --yes --non-interactive', { timeout: 120000 }, (err, stdout, stderr) => {
-        const combined = [stdout, stderr].filter(Boolean).join('\n').trim();
-        if (err) {
-          reject(new Error(combined || err.message));
-        } else {
-          resolve(combined);
-        }
+    // Step 1: 尝试官方卸载命令
+    report('uninstall', 'running', '执行官方卸载命令...');
+    try {
+      await new Promise((resolve, reject) => {
+        exec('openclaw uninstall --all --yes --non-interactive', { timeout: 120000 }, (err, stdout, stderr) => {
+          const combined = [stdout, stderr].filter(Boolean).join('\n').trim();
+          if (err) reject(new Error(combined || err.message));
+          else resolve(combined);
+        });
       });
-    });
-    report('uninstall', 'done', output || 'OpenClaw 已卸载 ✓');
-    report('all_done', 'done', '🎉 OpenClaw 已卸载');
+      report('uninstall', 'done', '官方卸载命令执行完毕');
+    } catch (err) {
+      report('uninstall', 'done', `官方卸载命令失败: ${err.message.slice(0, 100)}`);
+    }
+
+    // Step 2: 验证是否卸载干净，没干净就手动删
+    if (!isOpenClawGone()) {
+      report('verify', 'running', '检测到 openclaw 仍存在，执行手动卸载...');
+      try {
+        execSync('sudo npm rm -g openclaw 2>/dev/null', { timeout: 60000 });
+      } catch {}
+      // 删除残留文件和软链接
+      execSync('sudo rm -f /usr/bin/openclaw /usr/local/bin/openclaw 2>/dev/null', { timeout: 10000 });
+      execSync('sudo rm -rf /usr/lib/node_modules/openclaw /usr/local/lib/node_modules/openclaw 2>/dev/null', { timeout: 30000 });
+      report('verify', 'done', '手动卸载执行完毕');
+    } else {
+      report('verify', 'done', 'openclaw 已卸载 ✓');
+    }
+
+    // Step 3: 再次验证
+    if (!isOpenClawGone()) {
+      report('final_check', 'error', '⚠️ openclaw 仍存在，请手动执行: sudo npm rm -g openclaw');
+      return { success: false, steps };
+    }
+    report('final_check', 'done', '确认 openclaw 已完全移除 ✓');
+
+    // Step 3: 删除配置和状态目录
+    report('clean_config', 'running', '删除配置和状态目录...');
+    const homeDir = os.homedir();
+    const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(homeDir, '.openclaw');
+    try {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+      report('clean_config', 'done', `已删除 ${stateDir} ✓`);
+    } catch (err) {
+      report('clean_config', 'done', `删除 ${stateDir} 失败: ${err.message}`);
+    }
+
+    // Step 4: 删除 workspace
+    report('clean_workspace', 'running', '删除工作区...');
+    const workspace = path.join(homeDir, '.openclaw', 'workspace');
+    try {
+      fs.rmSync(workspace, { recursive: true, force: true });
+      report('clean_workspace', 'done', '工作区已删除 ✓');
+    } catch {
+      report('clean_workspace', 'done', '工作区删除跳过');
+    }
+
+    // Step 5: 停止并删除 systemd 服务
+    report('clean_service', 'running', '清理 systemd 服务...');
+    try {
+      await new Promise((resolve) => {
+        exec('systemctl --user disable --now openclaw-gateway.service 2>/dev/null; rm -f ~/.config/systemd/user/openclaw-gateway.service; systemctl --user daemon-reload', { timeout: 15000 }, () => resolve());
+      });
+      report('clean_service', 'done', '服务已清理 ✓');
+    } catch {
+      report('clean_service', 'done', '服务清理跳过');
+    }
+
+    report('all_done', 'done', '🎉 OpenClaw 已完全卸载');
     return { success: true, steps };
   } catch (err) {
     report('error', 'error', err.message);

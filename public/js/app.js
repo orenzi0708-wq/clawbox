@@ -513,7 +513,7 @@ async function uninstallClawhub() {
 }
 
 async function uninstallOpenclawTool() {
-  if (!confirm('确定要卸载 OpenClaw 吗？配置文件将保留。')) return;
+  if (!confirm('卸载将删除 OpenClaw 及所有配置文件、工作区数据。建议先备份 ~/.openclaw/ 目录。确定要卸载吗？')) return;
   showToolLog('正在卸载 OpenClaw...');
   try {
     const res = await fetch('/api/uninstall', { method: 'POST' });

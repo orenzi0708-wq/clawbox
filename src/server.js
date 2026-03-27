@@ -6,6 +6,35 @@ const { exec, execSync } = require('child_process');
 const { installOpenClaw, updateOpenClaw, uninstallOpenClaw, isOpenClawInstalled, getOpenClawVersion, isGatewayRunning, getOS, checkNodeVersion, isRoot, searchClawHubSkills, installClawHubSkill, isClawHubAvailable, installClawHubCLI } = require('./installer');
 const { getModelConfig, updateModelConfig, getFeishuConfig, updateFeishuConfig, getConfigSummary } = require('./config');
 
+function parseOpenclawDashboardUrlFromJson(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+
+  const queue = [payload];
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object') continue;
+
+    for (const [key, value] of Object.entries(current)) {
+      if (typeof value === 'string') {
+        const isDashboardKey = /dashboard/i.test(key);
+        const looksLikeDashboardUrl = /^https?:\/\/\S+/i.test(value) && /dashboard|token=|auth=/.test(value);
+        if (isDashboardKey && /^https?:\/\/\S+/i.test(value)) return value.trim();
+        if (looksLikeDashboardUrl) return value.trim();
+      } else if (value && typeof value === 'object') {
+        queue.push(value);
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseOpenclawDashboardUrlFromText(output) {
+  if (!output) return null;
+  const match = output.match(/Dashboard:\s+(https?:\/\/\S+)/i);
+  return match ? match[1] : null;
+}
+
 function startServer(port = 3456, devMode = false) {
   const app = express();
 
@@ -214,20 +243,25 @@ function startServer(port = 3456, devMode = false) {
     const extendedPath = `${process.env.PATH}:/root/.local/share/pnpm:/usr/local/bin:/usr/local/node-v24.14.0-linux-x64/bin`;
     const env = { ...process.env, PATH: extendedPath };
 
-    // Node.js — 用 which 检测系统是否安装，不依赖 process.version
+    // Node.js — 优先用 which，找不到就用 process.version（当前Node进程一定存在）
+    let nodeWhich = '';
     try {
-      const nodeWhich = execSync('which node 2>/dev/null || echo ""', {
+      nodeWhich = execSync('which node 2>/dev/null || command -v node 2>/dev/null || echo ""', {
         encoding: 'utf8', timeout: 5000
       }).trim();
-      if (nodeWhich) {
-        const nodeVer = execSync('node -v 2>/dev/null', {
-          encoding: 'utf8', timeout: 5000
-        }).trim();
+    } catch {}
+
+    if (nodeWhich) {
+      try {
+        const nodeVer = execSync('node -v 2>/dev/null', { encoding: 'utf8', timeout: 5000 }).trim();
         result.node = { installed: true, version: nodeVer, path: nodeWhich };
-      } else {
-        result.node = { installed: false };
+      } catch {
+        result.node = { installed: true, version: process.version, path: nodeWhich };
       }
-    } catch {
+    } else if (process.version) {
+      // which 找不到但当前进程就是 Node，说明它存在只是 PATH 可能有问题
+      result.node = { installed: true, version: process.version, path: process.execPath };
+    } else {
       result.node = { installed: false };
     }
     // ClawHub — 优先用 which/command -v，找不到再搜常见路径 + find
@@ -593,16 +627,34 @@ rm -f "${scriptPath}"
   // 获取 OpenClaw Dashboard URL
   app.get('/api/tools/openclaw-dashboard', (req, res) => {
     try {
-      const result = execSync('openclaw gateway status 2>/dev/null', {
-        encoding: 'utf8',
-        timeout: 10000
-      });
-      const match = result.match(/Dashboard:\s+(https?:\/\/\S+)/);
-      if (match) {
-        res.json({ success: true, url: match[1] });
-      } else {
-        res.json({ success: false, error: '未找到 Dashboard 地址，Gateway 可能未运行' });
+      let dashboardUrl = null;
+
+      try {
+        const jsonOutput = execSync('openclaw gateway status --json 2>/dev/null', {
+          encoding: 'utf8',
+          timeout: 10000
+        }).trim();
+        if (jsonOutput) {
+          try {
+            dashboardUrl = parseOpenclawDashboardUrlFromJson(JSON.parse(jsonOutput));
+          } catch {}
+        }
+      } catch {}
+
+      if (!dashboardUrl) {
+        const textOutput = execSync('openclaw gateway status 2>/dev/null', {
+          encoding: 'utf8',
+          timeout: 10000
+        });
+        dashboardUrl = parseOpenclawDashboardUrlFromText(textOutput);
       }
+
+      if (dashboardUrl) {
+        res.json({ success: true, url: dashboardUrl });
+        return;
+      }
+
+      res.json({ success: false, error: '未找到 Dashboard 地址，Gateway 可能未运行' });
     } catch (err) {
       res.json({ success: false, error: '无法获取 Dashboard 地址' });
     }

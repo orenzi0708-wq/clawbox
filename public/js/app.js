@@ -178,7 +178,6 @@ const CHANNEL_UI_CATALOG = {
 let availableChannels = [];
 let connectedChannels = [];
 let currentChannelKey = 'wecom';
-let currentChannelConfigMode = 'manual';
 let expandedConnectedChannels = new Set();
 let activeQuickConfigSessionId = '';
 let quickConfigPollTimer = null;
@@ -738,8 +737,6 @@ function fillChannelConfigPanel() {
   const connected = getConnectedChannel(currentChannelKey);
   const title = document.getElementById('channelConfigTitle');
   const badge = document.getElementById('channelSupportBadge');
-  const intro = document.getElementById('channelManualIntro');
-  const displayNameInput = document.getElementById('channelDisplayName');
   const footerNote = document.getElementById('channelFooterNote');
   const detailLink = document.getElementById('channelDetailLink');
   const pairingGuide = document.getElementById('channelPairingGuide');
@@ -751,14 +748,8 @@ function fillChannelConfigPanel() {
     badge.textContent = connected ? getChannelStatusText(connected) : '未配置';
     badge.className = `status-pill ${getChannelStatusClass(connected)}`.trim();
   }
-  if (intro) {
-    intro.textContent = meta.description || `请填写${meta.name}所需凭证后添加并应用。`;
-  }
-  if (displayNameInput) {
-    displayNameInput.value = connected?.displayName || meta.name;
-  }
   if (footerNote) {
-    footerNote.textContent = meta.footerNote || '当前版本优先支持手动配置。';
+    footerNote.textContent = meta.footerNote || '保存后会立即应用到当前通道配置。';
   }
   if (detailLink) {
     detailLink.href = meta.detailUrl || '/channel-docs.html';
@@ -780,16 +771,6 @@ function fillChannelConfigPanel() {
   }
 
   renderChannelDynamicFields(meta, connected);
-
-  switchChannelConfigMode(currentChannelConfigMode);
-}
-
-function switchChannelConfigMode(mode) {
-  currentChannelConfigMode = mode === 'quick' ? 'manual' : 'manual';
-  document.getElementById('channelManualTab')?.classList.add('active');
-  document.getElementById('channelQuickTab')?.classList.remove('active');
-  document.getElementById('channelQuickPane')?.classList.remove('active');
-  document.getElementById('channelManualPane')?.classList.add('active');
 }
 
 function toggleChannelSecretVisibility(fieldKey, btn) {
@@ -846,7 +827,7 @@ function renderConnectedChannels() {
       </div>
       <div class="channel-connected-body ${getConnectedChannelExpanded(channel.key) ? '' : 'collapsed'}">
         <div class="channel-connected-main">
-          <div class="channel-connected-meta">通道类型：${escHtml(channel.name)} · 接入方式：${channel.setupMode === 'manual' ? '手动配置' : '预留模式'}</div>
+          <div class="channel-connected-meta">通道类型：${escHtml(channel.name)}</div>
           <div class="channel-connected-summary-list">
             ${(Array.isArray(channel?.summary?.credentials) && channel.summary.credentials.length
               ? channel.summary.credentials
@@ -882,16 +863,17 @@ function editConnectedChannel(channelKey) {
   currentChannelKey = channelKey;
   renderChannelSelector();
   fillChannelConfigPanel();
-  switchChannelConfigMode('manual');
-  document.getElementById('channelDisplayName')?.focus();
+  const firstField = document.querySelector('#channelDynamicFields input, #channelDynamicFields textarea, #channelDynamicFields select');
+  firstField?.focus();
 }
 
 async function saveChannelManualConfig() {
   const msg = document.getElementById('channelSaveMsg');
   const meta = getCurrentChannelMeta();
+  const existingChannel = getConnectedChannel(currentChannelKey);
   const credentials = {};
   const settings = {};
-  const displayName = document.getElementById('channelDisplayName')?.value.trim() || meta.name;
+  const displayName = existingChannel?.displayName || meta.name;
   const missingFields = [];
 
   (meta.schema?.credentials || []).forEach((field) => {
@@ -945,7 +927,6 @@ async function saveChannelManualConfig() {
       }
     });
     await loadChannelsView();
-    switchChannelConfigMode('manual');
   } catch (err) {
     msg.textContent = `✗ ${err.message}`;
     msg.className = 'save-msg error';
@@ -1126,7 +1107,6 @@ async function copyChannelPairingCommand() {
 
 async function refreshChannelAfterQuickConfigSuccess() {
   await loadChannelsView();
-  switchChannelConfigMode('manual');
 }
 
 async function confirmQuickChannelConfig() {
@@ -1136,7 +1116,6 @@ async function confirmQuickChannelConfig() {
 async function loadFeishuConfig() {
   currentChannelKey = 'feishu';
   await loadChannelsView();
-  switchChannelConfigMode('manual');
 }
 
 async function saveFeishuConfig() {

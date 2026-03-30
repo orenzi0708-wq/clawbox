@@ -162,7 +162,7 @@
       <div class="card channel-console-card">
         <div class="section-kicker channel-console-kicker">消息通道</div>
         <h2>消息通道</h2>
-        <p class="desc channel-console-desc">统一管理消息通道接入，当前版本默认使用手动配置。</p>
+        <p class="desc channel-console-desc">统一管理消息通道接入，按通道类型填写必要字段后即可保存并应用。</p>
 
         <section class="channel-shell">
           <div class="channel-config-card channel-config-card-single">
@@ -179,18 +179,7 @@
               <div class="hint" id="channelSelectHint">加载中...</div>
             </div>
 
-            <div class="channel-mode-switch" role="tablist" aria-label="通道配置方式">
-              <button class="channel-config-tab is-disabled" id="channelQuickTab" type="button" disabled>快捷配置</button>
-              <button class="channel-config-tab active" id="channelManualTab" type="button" onclick="switchChannelConfigMode('manual')">手动配置</button>
-            </div>
-
             <div class="channel-config-pane active" id="channelManualPane">
-              <div class="channel-form-note" id="channelManualIntro">加载中...</div>
-
-              <div class="form-group channel-display-group">
-                <input type="text" id="channelDisplayName" placeholder="显示名称（选填，默认使用通道名称）">
-              </div>
-
               <div id="channelDynamicFields" class="channel-dynamic-fields"></div>
 
               <div class="channel-pairing-guide" id="channelPairingGuide" style="display:none">
@@ -207,13 +196,9 @@
               </div>
 
               <div class="channel-card-footer">
-                <div class="channel-card-footer-text" id="channelFooterNote">当前版本优先支持手动配置。</div>
+                <div class="channel-card-footer-text" id="channelFooterNote">保存后会立即应用到当前通道配置。</div>
                 <a class="channel-detail-link" id="channelDetailLink" href="/channel-docs.html" target="_blank" rel="noopener noreferrer">查看详情</a>
               </div>
-            </div>
-
-            <div class="channel-config-pane" id="channelQuickPane">
-              <div class="channel-form-note">当前版本暂未开放快捷配置，请使用上方“手动配置”完成添加与应用。</div>
             </div>
           </div>
 

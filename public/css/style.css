@@ -474,7 +474,7 @@ body::before {
 .channel-console-card .input-with-toggle {
   border-color: var(--border);
   border-radius: 12px;
-  background: rgba(8, 15, 25, 0.92);
+  background-color: rgba(8, 15, 25, 0.92);
   color: var(--text);
   box-shadow: none;
 }

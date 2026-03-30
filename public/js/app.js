@@ -670,9 +670,9 @@ function renderChannelDynamicFields(meta, connected) {
       : `请填写${escHtml(field.label)}`;
 
     return `
-      <div class="form-group">
+      <div class="form-group channel-field-group">
         <label>${escHtml(field.label)}${field.required ? ' <span class="channel-required">*</span>' : ''}</label>
-        <div class="input-with-toggle">
+        <div class="input-with-toggle ${field.secret ? 'has-toggle' : ''}">
           <input
             type="${inputType}"
             id="channelField-${escHtml(field.key)}"
@@ -700,7 +700,7 @@ function renderChannelDynamicFields(meta, connected) {
     }
 
     return `
-      <div class="form-group">
+      <div class="form-group channel-field-group">
         <label>${escHtml(field.label)}</label>
         <input
           type="text"
@@ -713,7 +713,34 @@ function renderChannelDynamicFields(meta, connected) {
     `;
   }).join('');
 
-  container.innerHTML = `${credentialsHtml}${settingsHtml}`;
+  container.innerHTML = `
+    ${credentialFields.length ? `
+      <section class="channel-form-section">
+        <div class="channel-section-head">
+          <div>
+            <div class="channel-section-title">凭证信息</div>
+            <div class="channel-section-desc">按当前通道要求填写凭证字段，密钥会以脱敏形式保存。</div>
+          </div>
+        </div>
+        <div class="channel-form-grid">
+          ${credentialsHtml}
+        </div>
+      </section>
+    ` : ''}
+    ${settingFields.length ? `
+      <section class="channel-form-section">
+        <div class="channel-section-head">
+          <div>
+            <div class="channel-section-title">通道设置</div>
+            <div class="channel-section-desc">可选项会按通道能力动态变化，保存后立即应用到当前实例。</div>
+          </div>
+        </div>
+        <div class="channel-form-grid">
+          ${settingsHtml}
+        </div>
+      </section>
+    ` : ''}
+  `;
 
   credentialFields.forEach((field) => {
     const input = document.getElementById(`channelField-${field.key}`);
@@ -801,6 +828,7 @@ function toggleChannelSecretVisibility(fieldKey, btn) {
   const visible = input.type === 'password';
   input.type = visible ? 'text' : 'password';
   btn.textContent = visible ? '🙈' : '👁';
+  btn.classList.toggle('is-active', visible);
 }
 
 function getChannelSummaryText(channel) {
@@ -822,21 +850,23 @@ function renderConnectedChannels() {
     <div class="channel-connected-item">
       <div class="channel-connected-main">
         <div class="channel-connected-title-row">
-          <div class="channel-connected-title">${escHtml(channel.displayName || channel.name)}</div>
+          <div class="channel-connected-heading">
+            <div class="channel-connected-title">${escHtml(channel.displayName || channel.name)}</div>
+            <div class="channel-connected-meta">通道类型：${escHtml(channel.name)} · 接入方式：${channel.setupMode === 'manual' ? '手动配置' : '预留模式'}</div>
+          </div>
           <span class="status-pill ${getChannelStatusClass(channel)}">${escHtml(getChannelStatusText(channel))}</span>
         </div>
-        <div class="channel-connected-meta">通道类型：${escHtml(channel.name)} · 接入方式：${channel.setupMode === 'manual' ? '手动配置' : '预留模式'}</div>
-        <div class="channel-connected-summary">
+        <div class="channel-connected-summary channel-connected-summary-primary">
           <span>${escHtml(getChannelSummaryText(channel))}</span>
         </div>
         ${channel.status === 'configured_pending_pairing' ? `
-          <div class="channel-connected-summary">
+          <div class="channel-connected-summary channel-connected-summary-note">
             <span>下一步：去飞书里给机器人发送消息，获取 pairing code</span>
             <span>命令：${escHtml(channel.pairing?.command || `openclaw pairing approve ${channel.key} CODE`)}</span>
           </div>
         ` : ''}
         ${channel.validation?.message ? `
-          <div class="channel-connected-summary">
+          <div class="channel-connected-summary channel-connected-summary-note">
             <span>校验信息：${escHtml(channel.validation.message)}</span>
           </div>
         ` : ''}

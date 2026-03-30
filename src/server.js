@@ -109,6 +109,22 @@ function getFeishuQuickConfigQrSeed(req, channelKey, sessionId) {
   };
 }
 
+function getFeishuProvisionResultExample() {
+  return {
+    appId: 'cli_xxxxxxxxxxxx',
+    appSecret: 'xxxxxxxxxxxxxxxx',
+    automation: {
+      appCreated: true,
+      botEnabled: true,
+      scopesConfigured: true,
+      eventSubscriptionConfigured: true,
+      publishReady: true,
+      provider: 'bridge',
+      lastProvisionedAt: new Date().toISOString()
+    }
+  };
+}
+
 function getFeishuAutoProvisionSeed() {
   const rawProvisionResult = String(process.env.FEISHU_AUTOCONFIG_PROVISION_RESULT || '').trim();
 
@@ -141,7 +157,7 @@ function getFeishuAutoProvisionSeed() {
           {
             code: 'invalid_autoprovision_result',
             title: '自动配置结果格式错误',
-            detail: 'FEISHU_AUTOCONFIG_PROVISION_RESULT 不是可用 JSON，或缺少 appId / appSecret。'
+            detail: `FEISHU_AUTOCONFIG_PROVISION_RESULT 不是可用 JSON，或缺少 appId / appSecret。期望格式示例：${JSON.stringify(getFeishuProvisionResultExample())}`
           },
           {
             code: 'autoprovision_result_parse_failed',
@@ -168,7 +184,7 @@ function getFeishuAutoProvisionSeed() {
         {
           code: 'missing_autoprovision_credentials',
           title: '缺少自动配置产物',
-          detail: '需要桥接流程最终返回 appId / appSecret（可用 FEISHU_AUTOCONFIG_PROVISION_RESULT 或旧的 APP_ID / APP_SECRET 方式注入），系统才能自动写入 OpenClaw 并进入已配置，待配对。'
+          detail: `需要桥接流程最终返回 appId / appSecret（推荐用 FEISHU_AUTOCONFIG_PROVISION_RESULT 注入，示例：${JSON.stringify(getFeishuProvisionResultExample())}），系统才能自动写入 OpenClaw 并进入已配置，待配对。`
         }
       ]
     };

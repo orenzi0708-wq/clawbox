@@ -641,8 +641,8 @@ body::before {
 
 .channel-manual-actions {
   display: grid;
-  gap: 10px;
-  margin-top: 16px;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .channel-manual-actions .save-msg {
@@ -668,7 +668,7 @@ body::before {
 
 .channel-dynamic-fields {
   display: grid;
-  gap: 14px;
+  gap: 10px;
 }
 
 .input-with-toggle {

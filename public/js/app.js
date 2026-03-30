@@ -663,11 +663,7 @@ function renderChannelDynamicFields(meta, connected) {
   const settingFields = Array.isArray(meta.schema?.settings) ? meta.schema.settings : [];
 
   const credentialsHtml = credentialFields.map((field) => {
-    const state = getChannelCredentialState(connected, field.key);
     const inputType = field.secret ? 'password' : 'text';
-    const hint = field.secret
-      ? (state.hasValue ? `当前已保存：${escHtml(state.maskedValue || '已脱敏')}` : `请填写${escHtml(field.label)}`)
-      : `请填写${escHtml(field.label)}`;
 
     return `
       <div class="form-group channel-field-group ${field.secret ? 'channel-field-group-secret' : ''}">
@@ -682,7 +678,6 @@ function renderChannelDynamicFields(meta, connected) {
           >
           ${field.secret ? `<button type="button" class="input-toggle" onclick="toggleChannelSecretVisibility('${escHtml(field.key)}', this)" aria-label="显示或隐藏密钥">👁</button>` : ''}
         </div>
-        <div class="hint" id="channelFieldHint-${escHtml(field.key)}">${hint}</div>
       </div>
     `;
   }).join('');

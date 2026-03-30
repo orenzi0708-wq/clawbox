@@ -110,6 +110,49 @@ function getFeishuQuickConfigQrSeed(req, channelKey, sessionId) {
 }
 
 function getFeishuAutoProvisionSeed() {
+  const rawProvisionResult = String(process.env.FEISHU_AUTOCONFIG_PROVISION_RESULT || '').trim();
+
+  if (rawProvisionResult) {
+    try {
+      const parsed = JSON.parse(rawProvisionResult);
+      const appId = String(parsed.appId || '').trim();
+      const appSecret = String(parsed.appSecret || '').trim();
+
+      if (appId && appSecret) {
+        return {
+          ready: true,
+          appId,
+          appSecret,
+          automation: {
+            appCreated: parsed.automation?.appCreated !== false,
+            botEnabled: parsed.automation?.botEnabled !== false,
+            scopesConfigured: parsed.automation?.scopesConfigured !== false,
+            eventSubscriptionConfigured: parsed.automation?.eventSubscriptionConfigured !== false,
+            publishReady: parsed.automation?.publishReady !== false,
+            provider: parsed.automation?.provider || 'bridge',
+            lastProvisionedAt: parsed.automation?.lastProvisionedAt || new Date().toISOString()
+          }
+        };
+      }
+    } catch (error) {
+      return {
+        ready: false,
+        blockers: [
+          {
+            code: 'invalid_autoprovision_result',
+            title: '自动配置结果格式错误',
+            detail: 'FEISHU_AUTOCONFIG_PROVISION_RESULT 不是可用 JSON，或缺少 appId / appSecret。'
+          },
+          {
+            code: 'autoprovision_result_parse_failed',
+            title: '桥接结果未落成可消费结构',
+            detail: `解析自动配置结果失败：${error.message}`
+          }
+        ]
+      };
+    }
+  }
+
   const appId = String(process.env.FEISHU_AUTOCONFIG_APP_ID || '').trim();
   const appSecret = String(process.env.FEISHU_AUTOCONFIG_APP_SECRET || '').trim();
 
@@ -125,7 +168,7 @@ function getFeishuAutoProvisionSeed() {
         {
           code: 'missing_autoprovision_credentials',
           title: '缺少自动配置产物',
-          detail: '需要真实自动化流程返回 appId 和 appSecret，系统才能自动写入 OpenClaw 并进入已配置，待配对。'
+          detail: '需要桥接流程最终返回 appId / appSecret（可用 FEISHU_AUTOCONFIG_PROVISION_RESULT 或旧的 APP_ID / APP_SECRET 方式注入），系统才能自动写入 OpenClaw 并进入已配置，待配对。'
         }
       ]
     };

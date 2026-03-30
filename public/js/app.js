@@ -179,6 +179,7 @@ let availableChannels = [];
 let connectedChannels = [];
 let currentChannelKey = 'wecom';
 let currentChannelConfigMode = 'manual';
+let expandedConnectedChannels = new Set();
 let activeQuickConfigSessionId = '';
 let quickConfigPollTimer = null;
 const CHANNEL_STATUS_TEXT = {
@@ -670,15 +671,15 @@ function renderChannelDynamicFields(meta, connected) {
       : `请填写${escHtml(field.label)}`;
 
     return `
-      <div class="form-group channel-field-group">
-        <label>${escHtml(field.label)}${field.required ? ' <span class="channel-required">*</span>' : ''}</label>
+      <div class="form-group channel-field-group ${field.secret ? 'channel-field-group-secret' : ''}">
         <div class="input-with-toggle ${field.secret ? 'has-toggle' : ''}">
           <input
             type="${inputType}"
             id="channelField-${escHtml(field.key)}"
             data-field-key="${escHtml(field.key)}"
             data-field-type="credential"
-            placeholder="${escHtml(field.placeholder || `输入${field.label}`)}"
+            placeholder="${escHtml(field.placeholder || field.label)}${field.required ? '' : '（选填）'}"
+            aria-label="${escHtml(field.label)}"
           >
           ${field.secret ? `<button type="button" class="input-toggle" onclick="toggleChannelSecretVisibility('${escHtml(field.key)}', this)" aria-label="显示或隐藏密钥">👁</button>` : ''}
         </div>
@@ -690,7 +691,7 @@ function renderChannelDynamicFields(meta, connected) {
   const settingsHtml = settingFields.map((field) => {
     if (field.type === 'boolean') {
       return `
-        <div class="form-group">
+        <div class="form-group channel-setting-group channel-setting-group-boolean">
           <label class="checkbox-label">
             <input type="checkbox" id="channelSetting-${escHtml(field.key)}" data-field-key="${escHtml(field.key)}" data-field-type="setting">
             ${escHtml(field.label)}
@@ -700,47 +701,20 @@ function renderChannelDynamicFields(meta, connected) {
     }
 
     return `
-      <div class="form-group channel-field-group">
-        <label>${escHtml(field.label)}</label>
+      <div class="form-group channel-setting-group">
         <input
           type="text"
           id="channelSetting-${escHtml(field.key)}"
           data-field-key="${escHtml(field.key)}"
           data-field-type="setting"
-          placeholder="${escHtml(field.placeholder || `输入${field.label}`)}"
+          placeholder="${escHtml(field.placeholder || field.label)}"
+          aria-label="${escHtml(field.label)}"
         >
       </div>
     `;
   }).join('');
 
-  container.innerHTML = `
-    ${credentialFields.length ? `
-      <section class="channel-form-section">
-        <div class="channel-section-head">
-          <div>
-            <div class="channel-section-title">凭证信息</div>
-            <div class="channel-section-desc">按当前通道要求填写凭证字段，密钥会以脱敏形式保存。</div>
-          </div>
-        </div>
-        <div class="channel-form-grid">
-          ${credentialsHtml}
-        </div>
-      </section>
-    ` : ''}
-    ${settingFields.length ? `
-      <section class="channel-form-section">
-        <div class="channel-section-head">
-          <div>
-            <div class="channel-section-title">通道设置</div>
-            <div class="channel-section-desc">可选项会按通道能力动态变化，保存后立即应用到当前实例。</div>
-          </div>
-        </div>
-        <div class="channel-form-grid">
-          ${settingsHtml}
-        </div>
-      </section>
-    ` : ''}
-  `;
+  container.innerHTML = `${credentialsHtml}${settingsHtml}`;
 
   credentialFields.forEach((field) => {
     const input = document.getElementById(`channelField-${field.key}`);
@@ -764,7 +738,6 @@ function fillChannelConfigPanel() {
   const connected = getConnectedChannel(currentChannelKey);
   const title = document.getElementById('channelConfigTitle');
   const badge = document.getElementById('channelSupportBadge');
-  const statusValue = document.getElementById('channelStatusValue');
   const intro = document.getElementById('channelManualIntro');
   const displayNameInput = document.getElementById('channelDisplayName');
   const footerNote = document.getElementById('channelFooterNote');
@@ -777,9 +750,6 @@ function fillChannelConfigPanel() {
   if (badge) {
     badge.textContent = connected ? getChannelStatusText(connected) : '未配置';
     badge.className = `status-pill ${getChannelStatusClass(connected)}`.trim();
-  }
-  if (statusValue) {
-    statusValue.textContent = connected ? getChannelStatusText(connected) : '未配置';
   }
   if (intro) {
     intro.textContent = meta.description || `请填写${meta.name}所需凭证后添加并应用。`;
@@ -837,6 +807,19 @@ function getChannelSummaryText(channel) {
   return summaryFields.map((item) => `${item.label}：${item.value || '-'}`).join(' · ');
 }
 
+function getConnectedChannelExpanded(channelKey) {
+  return !expandedConnectedChannels.has(channelKey);
+}
+
+function toggleConnectedChannelCard(channelKey) {
+  if (expandedConnectedChannels.has(channelKey)) {
+    expandedConnectedChannels.delete(channelKey);
+  } else {
+    expandedConnectedChannels.add(channelKey);
+  }
+  renderConnectedChannels();
+}
+
 function renderConnectedChannels() {
   const container = document.getElementById('connectedChannels');
   if (!container) return;
@@ -847,34 +830,49 @@ function renderConnectedChannels() {
   }
 
   container.innerHTML = connectedChannels.map((channel) => `
-    <div class="channel-connected-item">
-      <div class="channel-connected-main">
-        <div class="channel-connected-title-row">
-          <div class="channel-connected-heading">
-            <div class="channel-connected-title">${escHtml(channel.displayName || channel.name)}</div>
-            <div class="channel-connected-meta">通道类型：${escHtml(channel.name)} · 接入方式：${channel.setupMode === 'manual' ? '手动配置' : '预留模式'}</div>
+    <div class="channel-connected-item ${getConnectedChannelExpanded(channel.key) ? 'is-expanded' : 'is-collapsed'}">
+      <div class="channel-connected-header" onclick="toggleConnectedChannelCard('${escHtml(channel.key)}')">
+        <div class="channel-connected-header-left">
+          <span class="channel-fold-icon ${getConnectedChannelExpanded(channel.key) ? 'is-open' : ''}">▶</span>
+          <span class="channel-connected-title">${escHtml(channel.displayName || channel.name)}</span>
+        </div>
+        <div class="channel-connected-header-right">
+          <span class="channel-connected-status ${getChannelStatusClass(channel)}">
+            <span class="channel-connected-status-dot"></span>
+            <span>${escHtml(getChannelStatusText(channel))}</span>
+          </span>
+          <button class="channel-delete-icon" type="button" onclick="event.stopPropagation(); removeConnectedChannel('${escHtml(channel.key)}', this)" aria-label="删除通道" title="删除通道">🗑</button>
+        </div>
+      </div>
+      <div class="channel-connected-body ${getConnectedChannelExpanded(channel.key) ? '' : 'collapsed'}">
+        <div class="channel-connected-main">
+          <div class="channel-connected-meta">通道类型：${escHtml(channel.name)} · 接入方式：${channel.setupMode === 'manual' ? '手动配置' : '预留模式'}</div>
+          <div class="channel-connected-summary-list">
+            ${(Array.isArray(channel?.summary?.credentials) && channel.summary.credentials.length
+              ? channel.summary.credentials
+              : [{ label: '状态', value: getChannelSummaryText(channel) }]).map((item) => `
+                <div class="channel-summary-row">
+                  <span class="channel-summary-key">${escHtml(item.label)}</span>
+                  <span class="channel-summary-value">${escHtml(item.value || '-')}</span>
+                </div>
+              `).join('')}
           </div>
-          <span class="status-pill ${getChannelStatusClass(channel)}">${escHtml(getChannelStatusText(channel))}</span>
-        </div>
-        <div class="channel-connected-summary channel-connected-summary-primary">
-          <span>${escHtml(getChannelSummaryText(channel))}</span>
-        </div>
-        ${channel.status === 'configured_pending_pairing' ? `
-          <div class="channel-connected-summary channel-connected-summary-note">
-            <span>下一步：去飞书里给机器人发送消息，获取 pairing code</span>
-            <span>命令：${escHtml(channel.pairing?.command || `openclaw pairing approve ${channel.key} CODE`)}</span>
+          ${channel.status === 'configured_pending_pairing' ? `
+          <div class="channel-connected-note">
+            <span>下一步：去飞书里给机器人发送消息，获取 pairing code。</span>
+            <code>${escHtml(channel.pairing?.command || `openclaw pairing approve ${channel.key} CODE`)}</code>
           </div>
         ` : ''}
         ${channel.validation?.message ? `
-          <div class="channel-connected-summary channel-connected-summary-note">
+          <div class="channel-connected-note">
             <span>校验信息：${escHtml(channel.validation.message)}</span>
           </div>
         ` : ''}
-      </div>
-      <div class="channel-connected-actions">
-        <button class="btn btn-secondary btn-sm" type="button" onclick="editConnectedChannel('${escHtml(channel.key)}')">编辑配置</button>
-        <button class="btn btn-secondary btn-sm" type="button" onclick="toggleConnectedChannel('${escHtml(channel.key)}', ${channel.enabled ? 'false' : 'true'}, this)">${channel.enabled ? '停用' : '启用'}</button>
-        <button class="btn btn-danger btn-sm" type="button" onclick="removeConnectedChannel('${escHtml(channel.key)}', this)">移除接入</button>
+          <div class="channel-connected-actions">
+            <button class="btn btn-secondary btn-sm channel-subtle-btn" type="button" onclick="event.stopPropagation(); editConnectedChannel('${escHtml(channel.key)}')">编辑配置</button>
+            <button class="btn btn-secondary btn-sm channel-subtle-btn" type="button" onclick="event.stopPropagation(); toggleConnectedChannel('${escHtml(channel.key)}', ${channel.enabled ? 'false' : 'true'}, this)">${channel.enabled ? '停用' : '启用'}</button>
+          </div>
+        </div>
       </div>
     </div>
   `).join('');

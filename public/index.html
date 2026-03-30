@@ -159,67 +159,41 @@
 
     <!-- 消息通道面板 -->
     <section class="panel" id="panel-channels">
-      <div class="card">
-        <div class="section-kicker">消息通道</div>
-        <h2>消息通道模块</h2>
-        <p class="desc">统一管理消息通道接入。当前版本以手动添加为主，快捷配置暂未开放。</p>
+      <div class="card channel-console-card">
+        <div class="section-kicker channel-console-kicker">消息通道</div>
+        <h2>消息通道</h2>
+        <p class="desc channel-console-desc">统一管理消息通道接入，当前版本默认使用手动配置。</p>
 
         <section class="channel-shell">
           <div class="channel-config-card channel-config-card-single">
             <div class="channel-config-head">
-              <div>
-                <div class="model-panel-kicker">通道配置</div>
+              <div class="channel-config-head-main">
+                <div class="channel-config-caption">通道配置</div>
                 <h3 id="channelConfigTitle">手动添加消息通道</h3>
               </div>
               <span class="status-pill" id="channelSupportBadge">未配置</span>
             </div>
 
-            <div class="channel-card-topbar">
-              <div class="channel-select-panel">
-                <div class="form-group channel-select-group">
-                  <label for="channelSelect">选择通道</label>
-                  <select id="channelSelect" onchange="selectChannel(this.value)"></select>
-                  <div class="hint" id="channelSelectHint">加载中...</div>
-                </div>
-              </div>
-              <div class="channel-card-status">
-                <div class="channel-card-status-label">当前状态</div>
-                <div class="channel-card-status-value" id="channelStatusValue">未配置</div>
-              </div>
+            <div class="form-group channel-select-group">
+              <select id="channelSelect" onchange="selectChannel(this.value)" aria-label="选择通道"></select>
+              <div class="hint" id="channelSelectHint">加载中...</div>
             </div>
 
             <div class="channel-mode-switch" role="tablist" aria-label="通道配置方式">
+              <button class="channel-config-tab is-disabled" id="channelQuickTab" type="button" disabled>快捷配置</button>
               <button class="channel-config-tab active" id="channelManualTab" type="button" onclick="switchChannelConfigMode('manual')">手动配置</button>
-              <button class="channel-config-tab is-disabled" id="channelQuickTab" type="button" disabled>快捷配置（暂未开放）</button>
             </div>
 
             <div class="channel-config-pane active" id="channelManualPane">
-              <div class="channel-intro-card">
-                <div class="channel-intro-title">配置说明</div>
-                <div class="channel-quick-note" id="channelManualIntro">加载中...</div>
-              </div>
+              <div class="channel-form-note" id="channelManualIntro">加载中...</div>
 
-              <div class="channel-form-section">
-                <div class="channel-section-head">
-                  <div>
-                    <div class="channel-section-title">基础信息</div>
-                    <div class="channel-section-desc">先确认通道名称与实例标识，便于后续管理和切换。</div>
-                  </div>
-                </div>
-
-                <div class="channel-form-grid">
-                  <div class="form-group channel-display-group">
-                    <label>显示名称</label>
-                    <input type="text" id="channelDisplayName" placeholder="例如：企业微信生产环境">
-                    <div class="hint">用于区分当前通道配置，默认使用通道名称。</div>
-                  </div>
-                </div>
+              <div class="form-group channel-display-group">
+                <input type="text" id="channelDisplayName" placeholder="显示名称（选填，默认使用通道名称）">
               </div>
 
               <div id="channelDynamicFields" class="channel-dynamic-fields"></div>
 
               <div class="channel-pairing-guide" id="channelPairingGuide" style="display:none">
-                <div class="channel-pairing-title">配对说明</div>
                 <div class="channel-pairing-desc" id="channelPairingDesc">保存后请根据指引继续完成配对。</div>
                 <div class="channel-pairing-command-row">
                   <code id="channelPairingCommand">openclaw pairing approve feishu CODE</code>
@@ -239,20 +213,14 @@
             </div>
 
             <div class="channel-config-pane" id="channelQuickPane">
-              <div class="form-group">
-                <label>快捷配置状态</label>
-                <div class="channel-quick-note">当前版本暂未开放快捷配置。请使用上方“手动配置”完成添加与应用。</div>
-              </div>
+              <div class="channel-form-note">当前版本暂未开放快捷配置，请使用上方“手动配置”完成添加与应用。</div>
             </div>
           </div>
 
           <div class="channel-connected-card">
-            <div class="channel-config-head">
-              <div>
-                <div class="model-panel-kicker">已添加通道</div>
-                <h3>通道列表</h3>
-              </div>
-              <button class="btn btn-secondary btn-sm" type="button" onclick="loadChannelsView()">刷新</button>
+            <div class="channel-connected-section-head">
+              <h3>已接入通道</h3>
+              <button class="btn btn-secondary btn-sm channel-refresh-btn" type="button" onclick="loadChannelsView()">刷新</button>
             </div>
             <div id="connectedChannels" class="channel-connected-list">
               <div class="empty-state">加载中...</div>

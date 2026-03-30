@@ -184,7 +184,7 @@ function getFeishuAutoProvisionSeed() {
         {
           code: 'missing_autoprovision_credentials',
           title: '缺少自动配置产物',
-          detail: `需要桥接流程最终返回 appId / appSecret（推荐用 FEISHU_AUTOCONFIG_PROVISION_RESULT 注入，示例：${JSON.stringify(getFeishuProvisionResultExample())}），系统才能自动写入 OpenClaw 并进入已配置，待配对。`
+          detail: `需要桥接流程最终返回 appId / appSecret（推荐用 FEISHU_AUTOCONFIG_PROVISION_RESULT 注入，或 POST 到 /api/channels/feishu/quick-config/{sessionId}/provision-result，示例：${JSON.stringify(getFeishuProvisionResultExample())}），系统才能自动写入 OpenClaw 并进入已配置，待配对。`
         }
       ]
     };
@@ -258,6 +258,35 @@ function applyFeishuProvisionResult(channelKey, provisionSeed) {
     pairingStatus: 'pending',
     automation: provisionSeed.automation
   });
+}
+
+function normalizeFeishuProvisionPayload(payload = {}) {
+  const appId = String(payload.appId || '').trim();
+  const appSecret = String(payload.appSecret || '').trim();
+
+  if (!appId || !appSecret) {
+    return {
+      ok: false,
+      error: '缺少 appId 或 appSecret'
+    };
+  }
+
+  return {
+    ok: true,
+    provisionSeed: {
+      appId,
+      appSecret,
+      automation: {
+        appCreated: payload.automation?.appCreated !== false,
+        botEnabled: payload.automation?.botEnabled !== false,
+        scopesConfigured: payload.automation?.scopesConfigured !== false,
+        eventSubscriptionConfigured: payload.automation?.eventSubscriptionConfigured !== false,
+        publishReady: payload.automation?.publishReady !== false,
+        provider: payload.automation?.provider || 'callback',
+        lastProvisionedAt: payload.automation?.lastProvisionedAt || new Date().toISOString()
+      }
+    }
+  };
 }
 
 function serializeQuickConfigSession(session, includeQr = false) {
@@ -624,6 +653,48 @@ function startServer(port = 3456, devMode = false) {
       }
 
       res.json({ success: true, session: serializeQuickConfigSession(session, false) });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 外部自动化桥接回写快捷配置结果
+  app.post('/api/channels/:channelKey/quick-config/:sessionId/provision-result', (req, res) => {
+    try {
+      const { channelKey, sessionId } = req.params;
+      const session = quickChannelSessions.get(sessionId);
+      if (!session || session.channelKey !== channelKey) {
+        return res.status(404).json({ success: false, error: '快捷配置会话不存在或已失效' });
+      }
+
+      const normalized = normalizeFeishuProvisionPayload(req.body || {});
+      if (!normalized.ok) {
+        return res.status(400).json({
+          success: false,
+          error: normalized.error,
+          expected: getFeishuProvisionResultExample()
+        });
+      }
+
+      const channel = applyFeishuProvisionResult(channelKey, normalized.provisionSeed);
+      updateQuickConfigSessionState(session, QUICK_CONFIG_STATUS.CONFIGURED_PENDING_PAIRING, {
+        message: '飞书应用配置已由外部桥接写回，当前状态为已配置，待配对。',
+        nextAction: 'pairing',
+        blockerTitle: '下一步',
+        blockers: [
+          {
+            code: 'pairing_manual_step',
+            title: '继续完成配对',
+            detail: '去飞书里给机器人发送消息，拿到 pairing code 后执行 openclaw pairing approve feishu CODE。'
+          }
+        ],
+        result: {
+          channel,
+          source: 'callback'
+        }
+      });
+
+      return res.json({ success: true, session: serializeQuickConfigSession(session, false), channel });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
     }

@@ -2,9 +2,10 @@ const express = require('express');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const crypto = require('crypto');
 const { exec, execSync } = require('child_process');
 const { installOpenClaw, updateOpenClaw, uninstallOpenClaw, isOpenClawInstalled, getOpenClawVersion, isGatewayRunning, getOS, checkNodeVersion, isRoot, searchClawHubSkills, installClawHubSkill, isClawHubAvailable, installClawHubCLI } = require('./installer');
-const { getModelConfig, updateModelConfig, getFeishuConfig, updateFeishuConfig, getConfigSummary } = require('./config');
+const { getModelConfig, updateModelConfig, switchModel, switchModelById, deleteModel, getFeishuConfig, updateFeishuConfig, getConfigSummary, getInstalledModels, getChannelCatalog, getChannelConfig, getChannelsState, upsertChannelConfig, removeChannelConfig } = require('./config');
 
 function parseOpenclawDashboardUrlFromJson(payload) {
   if (!payload || typeof payload !== 'object') return null;
@@ -35,6 +36,196 @@ function parseOpenclawDashboardUrlFromText(output) {
   return match ? match[1] : null;
 }
 
+const quickChannelSessions = new Map();
+
+const QUICK_CONFIG_STATUS = {
+  IDLE: 'idle',
+  PENDING_SCAN: 'pending_scan',
+  SCANNED: 'scanned',
+  AUTHORIZED: 'authorized',
+  PROVISIONING: 'provisioning',
+  CONFIGURED_PENDING_PAIRING: 'configured_pending_pairing',
+  FAILED: 'failed'
+};
+
+function buildRequestBaseUrl(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const proto = forwardedProto || req.protocol || 'http';
+  const host = String(req.headers['x-forwarded-host'] || req.get('host') || '').split(',')[0].trim();
+  if (!host) return '';
+  return `${proto}://${host}`;
+}
+
+function hydrateQuickConfigTemplate(value, channelKey, sessionId, callbackUrl) {
+  return String(value || '')
+    .trim()
+    .replaceAll('{sessionId}', sessionId)
+    .replaceAll('{channelKey}', channelKey)
+    .replaceAll('{callbackUrl}', callbackUrl);
+}
+
+function getFeishuQuickConfigQrSeed(req, channelKey, sessionId) {
+  const baseUrl = buildRequestBaseUrl(req);
+  const callbackUrl = baseUrl
+    ? `${baseUrl}/api/channels/${encodeURIComponent(channelKey)}/quick-config/${encodeURIComponent(sessionId)}/complete`
+    : '';
+  const rawContent = String(process.env.FEISHU_AUTOCONFIG_QR_CONTENT || '').trim();
+  const rawImageUrl = String(process.env.FEISHU_AUTOCONFIG_QR_URL || '').trim();
+
+  if (!rawContent && !rawImageUrl) {
+    return {
+      ready: false,
+      blockers: [
+        {
+          code: 'missing_real_qr_payload',
+          title: '缺少真实扫码内容',
+          detail: '当前后端之前只返回占位 SVG，没有接入飞书真实扫码载荷。请提供 FEISHU_AUTOCONFIG_QR_CONTENT（扫码内容）或 FEISHU_AUTOCONFIG_QR_URL（二维码图片地址）。'
+        },
+        {
+          code: 'missing_feishu_qr_bridge',
+          title: '飞书扫码桥接未接通',
+          detail: '真实二维码应来自飞书自动化链路或中间服务，而不是本地伪造 session 图。当前仅已打通真实载荷返回入口。'
+        }
+      ],
+      qrCode: null
+    };
+  }
+
+  const content = rawContent
+    ? hydrateQuickConfigTemplate(rawContent, channelKey, sessionId, callbackUrl)
+    : '';
+  const imageUrl = rawImageUrl
+    ? hydrateQuickConfigTemplate(rawImageUrl, channelKey, sessionId, callbackUrl)
+    : '';
+
+  return {
+    ready: true,
+    qrCode: {
+      content,
+      imageUrl,
+      source: rawContent ? 'env_content' : 'env_image_url',
+      callbackUrl
+    }
+  };
+}
+
+function getFeishuAutoProvisionSeed() {
+  const appId = String(process.env.FEISHU_AUTOCONFIG_APP_ID || '').trim();
+  const appSecret = String(process.env.FEISHU_AUTOCONFIG_APP_SECRET || '').trim();
+
+  if (!appId || !appSecret) {
+    return {
+      ready: false,
+      blockers: [
+        {
+          code: 'missing_feishu_automation_bridge',
+          title: '飞书自动化桥接未接通',
+          detail: '当前已落好状态流、自动写入入口和待配对状态，但真实飞书应用创建、权限配置与事件订阅流程还未真正接通。'
+        },
+        {
+          code: 'missing_autoprovision_credentials',
+          title: '缺少自动配置产物',
+          detail: '需要真实自动化流程返回 appId 和 appSecret，系统才能自动写入 OpenClaw 并进入已配置，待配对。'
+        }
+      ]
+    };
+  }
+
+  return {
+    ready: true,
+    appId,
+    appSecret,
+    automation: {
+      appCreated: true,
+      botEnabled: true,
+      scopesConfigured: true,
+      eventSubscriptionConfigured: true,
+      publishReady: true,
+      provider: 'env',
+      lastProvisionedAt: new Date().toISOString()
+    }
+  };
+}
+
+function createQuickConfigSession(req, channelKey) {
+  const sessionId = crypto.randomUUID();
+  const qrSeed = getFeishuQuickConfigQrSeed(req, channelKey, sessionId);
+
+  return {
+    sessionId,
+    channelKey,
+    status: QUICK_CONFIG_STATUS.PENDING_SCAN,
+    supported: true,
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    pollIntervalMs: 2500,
+    nextAction: 'scan',
+    message: qrSeed.ready
+      ? '请使用飞书扫码，开始自动配置应用与机器人能力。'
+      : '当前还没有拿到真实飞书扫码内容，不能展示假二维码。',
+    blockerTitle: qrSeed.ready ? '自动化步骤' : '真实缺口',
+    blockers: qrSeed.ready ? [] : qrSeed.blockers,
+    qrCode: {
+      content: qrSeed.qrCode?.content || '',
+      imageUrl: qrSeed.qrCode?.imageUrl || '',
+      source: qrSeed.qrCode?.source || '',
+      callbackUrl: qrSeed.qrCode?.callbackUrl || ''
+    },
+    automationPlan: [
+      '创建或接管飞书企业应用',
+      '启用 Bot 能力',
+      '配置 OpenClaw 所需权限',
+      '配置事件订阅与长连接事件',
+      '写入 App ID / App Secret',
+      '进入已配置，待配对'
+    ],
+    result: null
+  };
+}
+
+function updateQuickConfigSessionState(session, status, patch = {}) {
+  session.status = status;
+  Object.assign(session, patch);
+  return session;
+}
+
+function applyFeishuProvisionResult(channelKey, provisionSeed) {
+  return upsertChannelConfig(channelKey, {
+    appId: provisionSeed.appId,
+    appSecret: provisionSeed.appSecret,
+    streaming: true,
+    accessMode: 'quick',
+    status: 'configured_pending_pairing',
+    pairingStatus: 'pending',
+    automation: provisionSeed.automation
+  });
+}
+
+function serializeQuickConfigSession(session, includeQr = false) {
+  if (!session) return null;
+
+  return {
+    sessionId: session.sessionId,
+    channelKey: session.channelKey,
+    status: session.status,
+    supported: !!session.supported,
+    expiresAt: session.expiresAt,
+    message: session.message,
+    blockerTitle: session.blockerTitle,
+    blockers: Array.isArray(session.blockers) ? session.blockers : [],
+    pollIntervalMs: session.pollIntervalMs,
+    nextAction: session.nextAction,
+    automationPlan: Array.isArray(session.automationPlan) ? session.automationPlan : [],
+    result: session.result || null,
+    qrCode: includeQr ? {
+      content: session.qrCode.content || '',
+      imageUrl: session.qrCode.imageUrl || '',
+      source: session.qrCode.source || '',
+      callbackUrl: session.qrCode.callbackUrl || ''
+    } : undefined
+  };
+}
+
 function startServer(port = 3456, devMode = false) {
   const app = express();
 
@@ -61,12 +252,161 @@ function startServer(port = 3456, devMode = false) {
     res.json(getConfigSummary());
   });
 
-  // 获取模型配置（完整）
+  // 获取模型列表
+  app.get('/api/models', (req, res) => {
+    res.json(getModelConfig());
+  });
+
+  // 验证 API Key
+  async function verifyApiKey(provider, model, apiKey, baseUrl) {
+    const http = require('http');
+    const https = require('https');
+
+    return new Promise((resolve) => {
+      let reqUrl, reqBody, reqHeaders;
+
+      if (provider === 'anthropic') {
+        reqUrl = 'https://api.anthropic.com/v1/messages';
+        reqBody = JSON.stringify({
+          model: model,
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'hi' }]
+        });
+        reqHeaders = {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01'
+        };
+      } else {
+        // OpenAI 兼容接口
+        const cleanBaseUrl = (baseUrl || '').replace(/\/+$/, '');
+        reqUrl = cleanBaseUrl + '/chat/completions';
+        reqBody = JSON.stringify({
+          model: model,
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 1
+        });
+        reqHeaders = {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + apiKey
+        };
+      }
+
+      const parsed = new URL(reqUrl);
+      const transport = parsed.protocol === 'https:' ? https : http;
+
+      const req = transport.request(reqUrl, {
+        method: 'POST',
+        headers: reqHeaders,
+        timeout: 10000
+      }, (resp) => {
+        let data = '';
+        resp.on('data', (chunk) => { data += chunk; });
+        resp.on('end', () => {
+          if (resp.statusCode === 200 || resp.statusCode === 201) {
+            resolve({ valid: true });
+          } else if (resp.statusCode === 401 || resp.statusCode === 403) {
+            resolve({ valid: false, error: 'API Key 无效或已过期' });
+          } else {
+            let detail = '';
+            try {
+              const parsed = JSON.parse(data);
+              detail = parsed.error?.message || parsed.message || data.slice(0, 200);
+            } catch {
+              detail = data.slice(0, 200);
+            }
+            resolve({ valid: false, error: `服务器返回 ${resp.statusCode}: ${detail}` });
+          }
+        });
+      });
+
+      req.on('error', (err) => {
+        resolve({ valid: false, error: `网络错误: ${err.message}` });
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        resolve({ valid: false, error: '请求超时（10秒），请检查 baseUrl 是否正确' });
+      });
+
+      req.write(reqBody);
+      req.end();
+    });
+  }
+
+  app.post('/api/models/verify', async (req, res) => {
+    try {
+      const { provider, model, apiKey, baseUrl } = req.body;
+      if (!provider || !model || !apiKey) {
+        return res.status(400).json({ success: false, error: '缺少必要参数' });
+      }
+      const result = await verifyApiKey(provider, model, apiKey, baseUrl);
+      res.json({ success: result.valid, error: result.error || null });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 添加模型
+  app.post('/api/models/add', async (req, res) => {
+    try {
+      const { provider, model, apiKey, baseUrl } = req.body;
+      if (!provider || !model || !apiKey) {
+        return res.status(400).json({ success: false, error: '缺少必要参数' });
+      }
+      // 先验证 API Key
+      const verify = await verifyApiKey(provider, model, apiKey, baseUrl);
+      if (!verify.valid) {
+        return res.status(400).json({ success: false, error: 'API Key 验证失败: ' + (verify.error || '未知错误') });
+      }
+      const result = updateModelConfig({ provider, model, apiKey, baseUrl });
+      res.json({ success: true, config: result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 切换模型
+  app.post('/api/models/switch', (req, res) => {
+    try {
+      const { provider, modelId } = req.body;
+      // 支持完整模型ID格式 (provider/modelId) — 优先用 switchModelById
+      if (modelId && modelId.includes('/')) {
+        const result = switchModelById(modelId);
+        return res.json({ success: true, config: result });
+      }
+      const result = switchModel(provider, modelId);
+      res.json({ success: true, config: result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 删除模型
+  app.delete('/api/models/:provider', (req, res) => {
+    try {
+      const result = deleteModel(req.params.provider);
+      res.json({ success: true, config: result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 获取已安装的模型（从 openclaw.json 读取）
+  app.get('/api/models/installed', (req, res) => {
+    try {
+      const result = getInstalledModels();
+      res.json({ success: true, ...result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 兼容旧接口
   app.get('/api/config/model', (req, res) => {
     res.json(getModelConfig());
   });
 
-  // 更新模型配置
   app.post('/api/config/model', (req, res) => {
     try {
       const { provider, model, apiKey, baseUrl } = req.body;
@@ -88,6 +428,229 @@ function startServer(port = 3456, devMode = false) {
       const { appId, appSecret, streaming } = req.body;
       const result = updateFeishuConfig({ appId, appSecret, streaming });
       res.json({ success: true, config: result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 获取消息通道目录
+  app.get('/api/channels/catalog', (req, res) => {
+    res.json({ success: true, catalog: getChannelCatalog() });
+  });
+
+  // 获取消息通道列表
+  app.get('/api/channels', (req, res) => {
+    res.json({ success: true, ...getChannelsState() });
+  });
+
+  // 获取单个消息通道配置
+  app.get('/api/channels/:channelKey', (req, res) => {
+    try {
+      const key = req.params.channelKey;
+      const channel = getChannelConfig(key);
+      if (!channel) {
+        return res.status(404).json({ success: false, error: '消息通道不存在' });
+      }
+      res.json({ success: true, channel });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 手动配置消息通道
+  app.post('/api/channels/:channelKey/manual-config', (req, res) => {
+    try {
+      const key = req.params.channelKey;
+      const { appId, appSecret, streaming } = req.body;
+      if (!String(appId || '').trim() || !String(appSecret || '').trim()) {
+        return res.status(400).json({ success: false, error: '请完整填写 App ID 和 App Secret' });
+      }
+      const channel = upsertChannelConfig(key, {
+        appId,
+        appSecret,
+        streaming,
+        accessMode: 'manual',
+        status: 'configured_pending_pairing',
+        pairingStatus: 'pending',
+        lastError: ''
+      });
+      res.json({ success: true, channel });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 删除消息通道配置
+  app.delete('/api/channels/:channelKey', (req, res) => {
+    try {
+      const key = req.params.channelKey;
+      const result = removeChannelConfig(key);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post('/api/channels/:channelKey/pairing-status', (req, res) => {
+    try {
+      const key = req.params.channelKey;
+      const { paired, pairingCode } = req.body;
+      const channel = upsertChannelConfig(key, {
+        pairingStatus: paired ? 'paired' : 'pending',
+        pairingCode,
+        status: paired ? 'connected' : 'configured_pending_pairing'
+      });
+      res.json({ success: true, channel });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 开始快捷配置消息通道
+  app.post('/api/channels/:channelKey/quick-config/start', (req, res) => {
+    try {
+      const channelKey = String(req.params.channelKey || '').trim();
+      const channelMeta = getChannelCatalog().find((item) => item.key === channelKey);
+      if (!channelMeta) {
+        return res.status(404).json({ success: false, error: '消息通道不存在' });
+      }
+
+      const session = createQuickConfigSession(req, channelKey);
+      if (!channelMeta.quickConfigEnabled) {
+        updateQuickConfigSessionState(session, QUICK_CONFIG_STATUS.FAILED, {
+          supported: false,
+          nextAction: 'manual_fallback',
+          message: '当前通道未启用快捷配置，请使用手动配置。',
+          blockers: [{
+            code: 'quick_config_disabled',
+            title: '快捷配置未启用',
+            detail: '该通道当前只开放手动配置。'
+          }]
+        });
+      } else if (!session.qrCode.content && !session.qrCode.imageUrl) {
+        updateQuickConfigSessionState(session, QUICK_CONFIG_STATUS.FAILED, {
+          nextAction: 'integrate_real_qr',
+          message: '当前缺少真实飞书二维码来源，已停止展示占位二维码。',
+          blockerTitle: '真实缺口',
+          blockers: session.blockers
+        });
+      }
+
+      quickChannelSessions.set(session.sessionId, session);
+      res.json({ success: true, session: serializeQuickConfigSession(session, true) });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 查询快捷配置状态
+  app.get('/api/channels/:channelKey/quick-config/:sessionId', (req, res) => {
+    try {
+      const { channelKey, sessionId } = req.params;
+      const session = quickChannelSessions.get(sessionId);
+      if (!session || session.channelKey !== channelKey) {
+        return res.status(404).json({ success: false, error: '快捷配置会话不存在或已失效' });
+      }
+
+      if (Date.now() > new Date(session.expiresAt).getTime()) {
+        updateQuickConfigSessionState(session, QUICK_CONFIG_STATUS.FAILED, {
+          message: '快捷配置会话已过期，请重新开始。',
+          nextAction: 'restart',
+          blockers: [{
+            code: 'session_expired',
+            title: '会话已过期',
+            detail: '请重新发起快捷配置，再次扫码。'
+          }]
+        });
+      }
+
+      res.json({ success: true, session: serializeQuickConfigSession(session, false) });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 确认快捷配置结果
+  app.post('/api/channels/:channelKey/quick-config/:sessionId/complete', (req, res) => {
+    try {
+      const { channelKey, sessionId } = req.params;
+      const session = quickChannelSessions.get(sessionId);
+      if (!session || session.channelKey !== channelKey) {
+        return res.status(404).json({ success: false, error: '快捷配置会话不存在或已失效' });
+      }
+      if (!session.qrCode?.content && !session.qrCode?.imageUrl) {
+        return res.status(409).json({
+          success: false,
+          error: '当前尚未接入真实二维码来源，无法继续快捷配置。',
+          session: serializeQuickConfigSession(session, false)
+        });
+      }
+      if (session.status === QUICK_CONFIG_STATUS.PENDING_SCAN) {
+        updateQuickConfigSessionState(session, QUICK_CONFIG_STATUS.SCANNED, {
+          message: '已记录扫码，请在飞书完成授权确认。',
+          nextAction: 'confirm_authorization',
+          blockers: []
+        });
+        return res.json({ success: true, session: serializeQuickConfigSession(session, false) });
+      }
+
+      if (session.status === QUICK_CONFIG_STATUS.SCANNED) {
+        updateQuickConfigSessionState(session, QUICK_CONFIG_STATUS.AUTHORIZED, {
+          message: '授权状态已确认，准备自动配置飞书应用。',
+          nextAction: 'provision'
+        });
+        return res.json({ success: true, session: serializeQuickConfigSession(session, false) });
+      }
+
+      if (session.status === QUICK_CONFIG_STATUS.AUTHORIZED || session.status === QUICK_CONFIG_STATUS.PROVISIONING) {
+        updateQuickConfigSessionState(session, QUICK_CONFIG_STATUS.PROVISIONING, {
+          message: '正在自动写入飞书应用配置与 OpenClaw 凭证...',
+          nextAction: 'wait'
+        });
+
+        const provisionSeed = getFeishuAutoProvisionSeed();
+        if (!provisionSeed.ready) {
+          updateQuickConfigSessionState(session, QUICK_CONFIG_STATUS.FAILED, {
+            message: '自动配置链路尚未完全接通，当前无法生成真实飞书凭证。',
+            nextAction: 'manual_or_integrate',
+            blockerTitle: '待补齐项',
+            blockers: provisionSeed.blockers
+          });
+          return res.status(501).json({
+            success: false,
+            error: session.message,
+            session: serializeQuickConfigSession(session, false)
+          });
+        }
+
+        const channel = applyFeishuProvisionResult(channelKey, provisionSeed);
+        updateQuickConfigSessionState(session, QUICK_CONFIG_STATUS.CONFIGURED_PENDING_PAIRING, {
+          message: '飞书应用配置已写入，当前状态为已配置，待配对。',
+          nextAction: 'pairing',
+          blockerTitle: '下一步',
+          blockers: [
+            {
+              code: 'pairing_manual_step',
+              title: '继续完成配对',
+              detail: '去飞书里给机器人发送消息，拿到 pairing code 后执行 openclaw pairing approve feishu CODE。'
+            }
+          ],
+          result: {
+            channel
+          }
+        });
+        return res.json({ success: true, session: serializeQuickConfigSession(session, false), channel });
+      }
+
+      if (session.status === QUICK_CONFIG_STATUS.CONFIGURED_PENDING_PAIRING) {
+        return res.json({ success: true, session: serializeQuickConfigSession(session, false) });
+      }
+
+      return res.status(400).json({
+        success: false,
+        error: '当前会话状态无法继续推进，请重新开始快捷配置。',
+        session: serializeQuickConfigSession(session, false)
+      });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
     }
@@ -184,6 +747,104 @@ function startServer(port = 3456, devMode = false) {
 
     if (!res.writableEnded) {
       res.end();
+    }
+  });
+
+  // 获取已安装的 Skills 列表
+  app.get('/api/skills/installed', (req, res) => {
+    try {
+      const skillsDir = path.join(os.homedir(), '.openclaw', 'workspace', 'skills');
+      if (!fs.existsSync(skillsDir)) {
+        return res.json({ success: true, skills: [] });
+      }
+
+      const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+      const skills = [];
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const skillDir = path.join(skillsDir, entry.name);
+        const skillMdPath = path.join(skillDir, 'SKILL.md');
+
+        let name = entry.name;
+        let description = '';
+
+        // 尝试从 SKILL.md 解析名称和描述
+        if (fs.existsSync(skillMdPath)) {
+          try {
+            const content = fs.readFileSync(skillMdPath, 'utf8');
+
+            // 尝试解析 YAML frontmatter 格式
+            const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+            if (fmMatch) {
+              const fm = fmMatch[1];
+              const nameMatch = fm.match(/^name:\s*(.+)$/m);
+              const descMatch = fm.match(/^description:\s*(.+)$/m);
+              if (nameMatch) name = nameMatch[1].trim();
+              if (descMatch) description = descMatch[1].trim().slice(0, 200);
+            }
+
+            // 如果 frontmatter 没有名称，尝试提取 # 标题
+            if (name === entry.name) {
+              const titleMatch = content.match(/^#\s+(.+)$/m);
+              if (titleMatch) name = titleMatch[1].trim();
+            }
+
+            // 如果还是没有描述，提取第一个非标题段落
+            if (!description) {
+              const lines = content.split('\n');
+              let descLines = [];
+              let foundTitle = false;
+              for (const line of lines) {
+                if ((line.startsWith('# ') || line.startsWith('---')) && !foundTitle) {
+                  foundTitle = true;
+                  continue;
+                }
+                if (foundTitle && line.trim() && !line.startsWith('#') && !line.startsWith('---')) {
+                  descLines.push(line.trim());
+                  if (descLines.length >= 2) break;
+                }
+              }
+              description = descLines.join(' ').slice(0, 200);
+            }
+          } catch {}
+        }
+
+        skills.push({
+          slug: entry.name,
+          name,
+          description,
+          path: skillDir
+        });
+      }
+
+      res.json({ success: true, skills });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 卸载 Skill
+  app.post('/api/skills/uninstall', (req, res) => {
+    try {
+      const { slug } = req.body;
+      if (!slug) {
+        return res.status(400).json({ success: false, error: '缺少 skill slug' });
+      }
+      // 安全检查：防止路径遍历
+      if (slug.includes('..') || slug.includes('/') || slug.includes('\\')) {
+        return res.status(400).json({ success: false, error: '无效的 skill 名称' });
+      }
+
+      const skillDir = path.join(os.homedir(), '.openclaw', 'workspace', 'skills', slug);
+      if (!fs.existsSync(skillDir)) {
+        return res.json({ success: false, error: 'Skill 不存在' });
+      }
+
+      fs.rmSync(skillDir, { recursive: true, force: true });
+      res.json({ success: true, message: `${slug} 已卸载` });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
     }
   });
 

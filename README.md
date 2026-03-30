@@ -32,7 +32,7 @@ npm start
 - **一键安装 OpenClaw** — 自动处理 Node.js、build tools、OpenClaw 安装
 - **卸载 OpenClaw** — 一键卸载，保留配置文件
 - **模型配置** — 支持 MIMO、DeepSeek、Gemini、Claude、GPT 等主流模型
-- **飞书通道** — 快速配置飞书机器人
+- **消息通道管理** — 支持企业微信、钉钉、QQ、元宝、飞书的手动添加与启停
 - **Skills 市场** — 搜索并安装 ClawHub 技能
 
 ## 系统要求

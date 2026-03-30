@@ -169,20 +169,22 @@ const MODEL_PROVIDER_CATALOG = {
 
 let expandedModelProviders = new Set();
 const CHANNEL_UI_CATALOG = {
-  feishu: {
-    key: 'feishu',
-    name: '飞书',
-    description: '飞书消息通道'
-  }
+  wecom: { key: 'wecom', name: '企业微信', description: '企业微信消息通道' },
+  dingtalk: { key: 'dingtalk', name: '钉钉', description: '钉钉消息通道' },
+  qq: { key: 'qq', name: 'QQ', description: 'QQ 消息通道' },
+  yuanbao: { key: 'yuanbao', name: '元宝', description: '元宝消息通道' },
+  feishu: { key: 'feishu', name: '飞书', description: '飞书消息通道' }
 };
 let availableChannels = [];
 let connectedChannels = [];
-let currentChannelKey = 'feishu';
-let currentChannelConfigMode = 'quick';
+let currentChannelKey = 'wecom';
+let currentChannelConfigMode = 'manual';
 let activeQuickConfigSessionId = '';
 let quickConfigPollTimer = null;
 const CHANNEL_STATUS_TEXT = {
   unconfigured: '未配置',
+  configured: '已配置未启用',
+  enabled: '已启用',
   configuring: '配置中',
   configured_pending_pairing: '已配置，待配对',
   connected: '已接入',
@@ -585,7 +587,7 @@ async function loadChannelsView() {
     connectedChannels = Array.isArray(data.connectedChannels) ? data.connectedChannels : [];
 
     if (!availableChannels.some((item) => item.key === currentChannelKey)) {
-      currentChannelKey = availableChannels[0]?.key || 'feishu';
+      currentChannelKey = availableChannels[0]?.key || 'wecom';
     }
 
     renderChannelSelector();
@@ -601,7 +603,7 @@ async function loadChannelsView() {
 }
 
 function getCurrentChannelMeta() {
-  return availableChannels.find((item) => item.key === currentChannelKey) || CHANNEL_UI_CATALOG[currentChannelKey] || CHANNEL_UI_CATALOG.feishu;
+  return availableChannels.find((item) => item.key === currentChannelKey) || CHANNEL_UI_CATALOG[currentChannelKey] || CHANNEL_UI_CATALOG.wecom;
 }
 
 function getConnectedChannel(channelKey) {
@@ -612,29 +614,35 @@ function getChannelStatusText(channel) {
   return CHANNEL_STATUS_TEXT[channel?.status] || '未配置';
 }
 
+function getChannelSaveSuccessText(channel) {
+  const status = channel?.status || '';
+  if (status === 'connected') return '✓ 已保存并应用，通道已接入';
+  if (status === 'configured_pending_pairing') return '✓ 已添加并应用，当前状态为已配置，待配对';
+  if (status === 'enabled') return '✓ 已添加并应用，通道已启用';
+  if (status === 'configured') return '✓ 已保存，当前状态为已配置未启用';
+  return '✓ 已保存';
+}
+
 function getChannelStatusClass(channel) {
   if (!channel) return '';
   if (channel.status === 'connected') return 'active';
+  if (channel.status === 'enabled') return 'active';
   if (channel.status === 'configured_pending_pairing') return 'warn';
   if (channel.status === 'failed') return 'error';
   return '';
 }
 
 function renderChannelSelector() {
-  const selector = document.getElementById('channelSelector');
-  const countMeta = document.getElementById('channelCountMeta');
-  if (!selector || !countMeta) return;
+  const selector = document.getElementById('channelSelect');
+  const hint = document.getElementById('channelSelectHint');
+  if (!selector || !hint) return;
 
-  countMeta.textContent = `${availableChannels.length} 个可用通道`;
   selector.innerHTML = availableChannels.map((item) => {
     const channel = getConnectedChannel(item.key);
-    return `
-      <button class="channel-option ${item.key === currentChannelKey ? 'active' : ''}" type="button" onclick="selectChannel('${escHtml(item.key)}')">
-        <span class="channel-option-name">${escHtml(item.name)}</span>
-        <span class="channel-option-meta">${escHtml(getChannelStatusText(channel))}</span>
-      </button>
-    `;
+    const suffix = channel ? ` · ${getChannelStatusText(channel)}` : '';
+    return `<option value="${escHtml(item.key)}" ${item.key === currentChannelKey ? 'selected' : ''}>${escHtml(item.name)}${escHtml(suffix)}</option>`;
   }).join('');
+  hint.textContent = `当前可手动添加 ${availableChannels.length} 个消息通道`;
 }
 
 function selectChannel(channelKey) {
@@ -643,17 +651,99 @@ function selectChannel(channelKey) {
   fillChannelConfigPanel();
 }
 
+function getChannelCredentialState(channel, fieldKey) {
+  return channel?.credentialState?.[fieldKey] || { hasValue: false, maskedValue: '' };
+}
+
+function renderChannelDynamicFields(meta, connected) {
+  const container = document.getElementById('channelDynamicFields');
+  if (!container) return;
+
+  const credentialFields = Array.isArray(meta.schema?.credentials) ? meta.schema.credentials : [];
+  const settingFields = Array.isArray(meta.schema?.settings) ? meta.schema.settings : [];
+
+  const credentialsHtml = credentialFields.map((field) => {
+    const state = getChannelCredentialState(connected, field.key);
+    const inputType = field.secret ? 'password' : 'text';
+    const hint = field.secret
+      ? (state.hasValue ? `当前已保存：${escHtml(state.maskedValue || '已脱敏')}` : `请填写${escHtml(field.label)}`)
+      : `请填写${escHtml(field.label)}`;
+
+    return `
+      <div class="form-group">
+        <label>${escHtml(field.label)}${field.required ? ' <span class="channel-required">*</span>' : ''}</label>
+        <div class="input-with-toggle">
+          <input
+            type="${inputType}"
+            id="channelField-${escHtml(field.key)}"
+            data-field-key="${escHtml(field.key)}"
+            data-field-type="credential"
+            placeholder="${escHtml(field.placeholder || `输入${field.label}`)}"
+          >
+          ${field.secret ? `<button type="button" class="input-toggle" onclick="toggleChannelSecretVisibility('${escHtml(field.key)}', this)" aria-label="显示或隐藏密钥">👁</button>` : ''}
+        </div>
+        <div class="hint" id="channelFieldHint-${escHtml(field.key)}">${hint}</div>
+      </div>
+    `;
+  }).join('');
+
+  const settingsHtml = settingFields.map((field) => {
+    if (field.type === 'boolean') {
+      return `
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="channelSetting-${escHtml(field.key)}" data-field-key="${escHtml(field.key)}" data-field-type="setting">
+            ${escHtml(field.label)}
+          </label>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="form-group">
+        <label>${escHtml(field.label)}</label>
+        <input
+          type="text"
+          id="channelSetting-${escHtml(field.key)}"
+          data-field-key="${escHtml(field.key)}"
+          data-field-type="setting"
+          placeholder="${escHtml(field.placeholder || `输入${field.label}`)}"
+        >
+      </div>
+    `;
+  }).join('');
+
+  container.innerHTML = `${credentialsHtml}${settingsHtml}`;
+
+  credentialFields.forEach((field) => {
+    const input = document.getElementById(`channelField-${field.key}`);
+    if (!input) return;
+    input.value = field.secret ? '' : (connected?.credentials?.[field.key] || '');
+  });
+
+  settingFields.forEach((field) => {
+    const input = document.getElementById(`channelSetting-${field.key}`);
+    if (!input) return;
+    if (field.type === 'boolean') {
+      input.checked = connected?.settings?.[field.key] ?? field.defaultValue ?? false;
+    } else {
+      input.value = connected?.settings?.[field.key] ?? field.defaultValue ?? '';
+    }
+  });
+}
+
 function fillChannelConfigPanel() {
   const meta = getCurrentChannelMeta();
   const connected = getConnectedChannel(currentChannelKey);
   const title = document.getElementById('channelConfigTitle');
   const badge = document.getElementById('channelSupportBadge');
-  const appIdInput = document.getElementById('channelAppId');
-  const appSecretInput = document.getElementById('channelAppSecret');
-  const secretHint = document.getElementById('channelSecretHint');
-  const streamingInput = document.getElementById('channelStreaming');
-  const quickHint = document.getElementById('channelQuickHint');
-  const quickBlockers = document.getElementById('channelQuickBlockers');
+  const statusValue = document.getElementById('channelStatusValue');
+  const intro = document.getElementById('channelManualIntro');
+  const displayNameInput = document.getElementById('channelDisplayName');
+  const footerNote = document.getElementById('channelFooterNote');
+  const detailLink = document.getElementById('channelDetailLink');
+  const pairingGuide = document.getElementById('channelPairingGuide');
+  const pairingDesc = document.getElementById('channelPairingDesc');
   const pairingCommand = document.getElementById('channelPairingCommand');
 
   if (title) title.textContent = `${meta.name}通道配置`;
@@ -661,51 +751,62 @@ function fillChannelConfigPanel() {
     badge.textContent = connected ? getChannelStatusText(connected) : '未配置';
     badge.className = `status-pill ${getChannelStatusClass(connected)}`.trim();
   }
-  if (quickHint) {
-    quickHint.textContent = meta.quickConfigEnabled
-      ? `当前默认通道为${meta.name}。快捷配置的目标是自动完成应用配置并写入凭证，完成后进入“已配置，待配对”。`
-      : `当前默认通道为${meta.name}。该通道当前只支持手动配置。`;
+  if (statusValue) {
+    statusValue.textContent = connected ? getChannelStatusText(connected) : '未配置';
   }
-  if (quickBlockers) {
-    quickBlockers.innerHTML = meta.quickConfigEnabled
-      ? [
-          '自动化阶段：',
-          '1. 扫码发起授权。',
-          '2. 确认授权后自动推进配置。',
-          '3. 凭证写入完成后进入已配置，待配对。',
-          '4. pairing approve 本轮仍需手动执行。'
-        ].map((item) => `<div>${escHtml(item)}</div>`).join('')
-      : [
-          '当前卡点：',
-          '1. 该通道未启用快捷配置。',
-          '2. 请改用手动配置。'
-        ].map((item) => `<div>${escHtml(item)}</div>`).join('');
+  if (intro) {
+    intro.textContent = meta.description || `请填写${meta.name}所需凭证后添加并应用。`;
+  }
+  if (displayNameInput) {
+    displayNameInput.value = connected?.displayName || meta.name;
+  }
+  if (footerNote) {
+    footerNote.textContent = meta.footerNote || '当前版本优先支持手动配置。';
+  }
+  if (detailLink) {
+    detailLink.href = meta.detailUrl || '/channel-docs.html';
+    detailLink.textContent = meta.detailUrl ? '查看详情' : '详情即将补充';
+    detailLink.classList.toggle('is-disabled', !meta.detailUrl);
+    detailLink.setAttribute('aria-disabled', meta.detailUrl ? 'false' : 'true');
+  }
+  if (pairingGuide) {
+    const showPairing = currentChannelKey === 'feishu' && !!connected?.configured;
+    pairingGuide.style.display = showPairing ? 'block' : 'none';
+  }
+  if (pairingDesc) {
+    pairingDesc.textContent = connected?.status === 'connected'
+      ? '飞书通道已接入。如需重新配对，可继续使用下方命令。'
+      : '保存并应用后，请去飞书里给机器人发送消息，获取 pairing code，再执行下方命令。';
   }
   if (pairingCommand) {
     pairingCommand.textContent = connected?.pairing?.command || `openclaw pairing approve ${currentChannelKey} CODE`;
   }
 
-  if (appIdInput) appIdInput.value = connected?.settings?.appId || '';
-  if (appSecretInput) {
-    appSecretInput.value = '';
-    appSecretInput.placeholder = connected?.settings?.hasAppSecret ? '已设置，重新输入可更新' : '输入 App Secret';
-  }
-  if (secretHint) {
-    secretHint.textContent = connected?.settings?.hasAppSecret
-      ? `当前已保存：${connected.summary?.appSecretMasked || '已脱敏'}`
-      : '未设置 App Secret';
-  }
-  if (streamingInput) streamingInput.checked = connected?.settings?.streaming ?? true;
+  renderChannelDynamicFields(meta, connected);
 
   switchChannelConfigMode(currentChannelConfigMode);
 }
 
 function switchChannelConfigMode(mode) {
-  currentChannelConfigMode = mode;
-  document.getElementById('channelQuickTab')?.classList.toggle('active', mode === 'quick');
-  document.getElementById('channelManualTab')?.classList.toggle('active', mode === 'manual');
-  document.getElementById('channelQuickPane')?.classList.toggle('active', mode === 'quick');
-  document.getElementById('channelManualPane')?.classList.toggle('active', mode === 'manual');
+  currentChannelConfigMode = mode === 'quick' ? 'manual' : 'manual';
+  document.getElementById('channelManualTab')?.classList.add('active');
+  document.getElementById('channelQuickTab')?.classList.remove('active');
+  document.getElementById('channelQuickPane')?.classList.remove('active');
+  document.getElementById('channelManualPane')?.classList.add('active');
+}
+
+function toggleChannelSecretVisibility(fieldKey, btn) {
+  const input = document.getElementById(`channelField-${fieldKey}`);
+  if (!input || !btn) return;
+  const visible = input.type === 'password';
+  input.type = visible ? 'text' : 'password';
+  btn.textContent = visible ? '🙈' : '👁';
+}
+
+function getChannelSummaryText(channel) {
+  const summaryFields = Array.isArray(channel?.summary?.credentials) ? channel.summary.credentials : [];
+  if (!summaryFields.length) return '尚未保存凭证';
+  return summaryFields.map((item) => `${item.label}：${item.value || '-'}`).join(' · ');
 }
 
 function renderConnectedChannels() {
@@ -721,13 +822,12 @@ function renderConnectedChannels() {
     <div class="channel-connected-item">
       <div class="channel-connected-main">
         <div class="channel-connected-title-row">
-          <div class="channel-connected-title">${escHtml(channel.name)}</div>
+          <div class="channel-connected-title">${escHtml(channel.displayName || channel.name)}</div>
           <span class="status-pill ${getChannelStatusClass(channel)}">${escHtml(getChannelStatusText(channel))}</span>
         </div>
-        <div class="channel-connected-meta">接入方式：${channel.accessMode === 'manual' ? '手动配置' : '快捷配置'}</div>
+        <div class="channel-connected-meta">通道类型：${escHtml(channel.name)} · 接入方式：${channel.setupMode === 'manual' ? '手动配置' : '预留模式'}</div>
         <div class="channel-connected-summary">
-          <span>App ID：${escHtml(channel.summary?.appId || '-')}</span>
-          <span>App Secret：${escHtml(channel.summary?.appSecretMasked || '-')}</span>
+          <span>${escHtml(getChannelSummaryText(channel))}</span>
         </div>
         ${channel.status === 'configured_pending_pairing' ? `
           <div class="channel-connected-summary">
@@ -735,9 +835,15 @@ function renderConnectedChannels() {
             <span>命令：${escHtml(channel.pairing?.command || `openclaw pairing approve ${channel.key} CODE`)}</span>
           </div>
         ` : ''}
+        ${channel.validation?.message ? `
+          <div class="channel-connected-summary">
+            <span>校验信息：${escHtml(channel.validation.message)}</span>
+          </div>
+        ` : ''}
       </div>
       <div class="channel-connected-actions">
         <button class="btn btn-secondary btn-sm" type="button" onclick="editConnectedChannel('${escHtml(channel.key)}')">编辑配置</button>
+        <button class="btn btn-secondary btn-sm" type="button" onclick="toggleConnectedChannel('${escHtml(channel.key)}', ${channel.enabled ? 'false' : 'true'}, this)">${channel.enabled ? '停用' : '启用'}</button>
         <button class="btn btn-danger btn-sm" type="button" onclick="removeConnectedChannel('${escHtml(channel.key)}', this)">移除接入</button>
       </div>
     </div>
@@ -749,17 +855,39 @@ function editConnectedChannel(channelKey) {
   renderChannelSelector();
   fillChannelConfigPanel();
   switchChannelConfigMode('manual');
-  document.getElementById('channelAppId')?.focus();
+  document.getElementById('channelDisplayName')?.focus();
 }
 
 async function saveChannelManualConfig() {
-  const appId = document.getElementById('channelAppId').value.trim();
-  const appSecret = document.getElementById('channelAppSecret').value.trim();
-  const streaming = document.getElementById('channelStreaming').checked;
   const msg = document.getElementById('channelSaveMsg');
+  const meta = getCurrentChannelMeta();
+  const credentials = {};
+  const settings = {};
+  const displayName = document.getElementById('channelDisplayName')?.value.trim() || meta.name;
+  const missingFields = [];
 
-  if (!appId || !appSecret) {
-    msg.textContent = '✗ 请填写 App ID 和 App Secret';
+  (meta.schema?.credentials || []).forEach((field) => {
+    const input = document.getElementById(`channelField-${field.key}`);
+    const value = input?.value.trim() || '';
+    const state = getChannelCredentialState(getConnectedChannel(currentChannelKey), field.key);
+    if (!field.secret || value || !state.hasValue) {
+      credentials[field.key] = value;
+    }
+    if (field.required && !value) {
+      if (!state.hasValue) {
+        missingFields.push(field.label);
+      }
+    }
+  });
+
+  (meta.schema?.settings || []).forEach((field) => {
+    const input = document.getElementById(`channelSetting-${field.key}`);
+    if (!input) return;
+    settings[field.key] = field.type === 'boolean' ? !!input.checked : input.value;
+  });
+
+  if (missingFields.length) {
+    msg.textContent = `✗ 请填写${missingFields.join('、')}`;
     msg.className = 'save-msg error';
     return;
   }
@@ -768,7 +896,11 @@ async function saveChannelManualConfig() {
     const res = await fetch(`/api/channels/${encodeURIComponent(currentChannelKey)}/manual-config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ appId, appSecret, streaming })
+      body: JSON.stringify({
+        displayName,
+        credentials,
+        settings
+      })
     });
     const data = await res.json();
 
@@ -776,9 +908,14 @@ async function saveChannelManualConfig() {
       throw new Error(data.error || '保存失败');
     }
 
-    msg.textContent = '✓ 已保存，当前状态为已配置，待配对';
+    msg.textContent = getChannelSaveSuccessText(data.channel);
     msg.className = 'save-msg success';
-    document.getElementById('channelAppSecret').value = '';
+    (meta.schema?.credentials || []).forEach((field) => {
+      if (field.secret) {
+        const input = document.getElementById(`channelField-${field.key}`);
+        if (input) input.value = '';
+      }
+    });
     await loadChannelsView();
     switchChannelConfigMode('manual');
   } catch (err) {
@@ -791,8 +928,29 @@ async function saveChannelManualConfig() {
   }, 3000);
 }
 
+async function toggleConnectedChannel(channelKey, enabled, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(`/api/channels/${encodeURIComponent(channelKey)}/enabled`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled })
+    });
+    const data = await res.json();
+    if (!data.success) {
+      throw new Error(data.error || '状态更新失败');
+    }
+    await loadChannelsView();
+  } catch (err) {
+    alert('状态更新失败: ' + err.message);
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function removeConnectedChannel(channelKey, btn) {
-  if (!confirm(`确定要移除「${channelKey}」消息通道吗？`)) return;
+  const channel = getConnectedChannel(channelKey);
+  const name = channel?.displayName || channel?.name || channelKey;
+  if (!confirm(`确定要移除「${name}」消息通道吗？`)) return;
 
   if (btn) btn.disabled = true;
   try {
@@ -814,46 +972,13 @@ async function removeConnectedChannel(channelKey, btn) {
   }
 }
 
-async function startQuickChannelConfig() {
-  const btn = document.getElementById('channelQuickStartBtn');
-  const msg = document.getElementById('channelQuickMsg');
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = '准备中...';
-  }
-
-  try {
-    const res = await fetch(`/api/channels/${encodeURIComponent(currentChannelKey)}/quick-config/start`, {
-      method: 'POST'
-    });
-    const data = await res.json();
-    if (!data.success) {
-      throw new Error(data.error || '快捷配置启动失败');
-    }
-
-    activeQuickConfigSessionId = data.session.sessionId;
-    openQuickChannelModal(data.session);
-    beginQuickConfigPolling();
-
-    msg.textContent = '✓ 已打开快捷配置流程';
-    msg.className = 'save-msg success';
-  } catch (err) {
-    msg.textContent = `✗ ${err.message}`;
-    msg.className = 'save-msg error';
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = '开始快捷配置';
-    }
-    setTimeout(() => {
-      msg.textContent = '';
-    }, 4000);
-  }
-}
-
 function openQuickChannelModal(session) {
   document.getElementById('channelQuickConfigModal').style.display = 'flex';
-  updateQuickChannelModal(session, true);
+  updateQuickChannelModal(session || {
+    status: 'failed',
+    message: '快捷配置暂未开放，请使用手动配置。',
+    blockers: []
+  }, true);
 }
 
 function closeQuickChannelModal() {
@@ -864,9 +989,6 @@ function closeQuickChannelModal() {
 
 function beginQuickConfigPolling() {
   stopQuickConfigPolling();
-  quickConfigPollTimer = window.setInterval(() => {
-    refreshQuickChannelStatus(false);
-  }, 3000);
 }
 
 function stopQuickConfigPolling() {
@@ -877,25 +999,21 @@ function stopQuickConfigPolling() {
 }
 
 async function refreshQuickChannelStatus(showMessage = true) {
-  if (!activeQuickConfigSessionId) return;
-
-  try {
-    const res = await fetch(`/api/channels/${encodeURIComponent(currentChannelKey)}/quick-config/${encodeURIComponent(activeQuickConfigSessionId)}`);
-    const data = await res.json();
-    if (!data.success) {
-      throw new Error(data.error || '获取状态失败');
-    }
-    updateQuickChannelModal(data.session, showMessage);
-  } catch (err) {
-    if (showMessage) {
-      alert('刷新状态失败: ' + err.message);
-    }
+  if (showMessage) {
+    updateQuickChannelModal({
+      status: 'failed',
+      message: '快捷配置暂未开放，请使用手动配置。',
+      blockers: [{
+        title: '当前版本说明',
+        detail: '飞书扫码自动配置主线已暂停，本轮只交付手动添加闭环。'
+      }]
+    }, false);
   }
 }
 
 function updateQuickChannelModal(session, updateQrImage = false) {
   document.getElementById('quickChannelName').textContent = getCurrentChannelMeta().name;
-  document.getElementById('quickChannelStatusText').textContent = session.message || '等待扫码';
+  document.getElementById('quickChannelStatusText').textContent = session.message || '快捷配置暂未开放';
   const badge = document.getElementById('quickChannelStatusBadge');
   const confirmBtn = document.getElementById('quickChannelConfirmBtn');
   const placeholder = document.getElementById('quickChannelQrPlaceholder');
@@ -912,7 +1030,7 @@ function updateQuickChannelModal(session, updateQrImage = false) {
     authorized: '已授权',
     provisioning: '配置中',
     configured_pending_pairing: '待配对',
-    failed: '配置失败'
+    failed: '暂未开放'
   };
 
   badge.textContent = statusLabelMap[session.status] || '处理中';
@@ -930,17 +1048,17 @@ function updateQuickChannelModal(session, updateQrImage = false) {
     image.onerror = () => {
       image.style.display = 'none';
       placeholder.style.display = 'flex';
-      placeholder.textContent = '已拿到真实二维码来源，但当前环境无法加载图片。';
+      placeholder.textContent = '当前版本不展示自动配置二维码。';
     };
     image.src = qrImageUrl;
     image.style.display = 'block';
     placeholder.style.display = 'none';
-    placeholder.textContent = '二维码准备中...';
+    placeholder.textContent = '当前版本不展示自动配置二维码。';
   } else if (updateQrImage) {
     image.removeAttribute('src');
     image.style.display = 'none';
     placeholder.style.display = 'flex';
-    placeholder.textContent = '当前未拿到真实二维码来源，不再展示占位二维码。';
+    placeholder.textContent = '当前版本不展示自动配置二维码。';
   }
 
   if (qrMeta) {
@@ -952,7 +1070,7 @@ function updateQuickChannelModal(session, updateQrImage = false) {
           qrImageSource ? `<div>二维码图片地址：${escHtml(truncateMiddle(qrImageSource, 96))}</div>` : '',
           session.qrCode?.callbackUrl ? `<div>回调地址：${escHtml(session.qrCode.callbackUrl)}</div>` : ''
         ].filter(Boolean).join('')
-      : '<div>当前没有真实二维码来源，界面不会再渲染假二维码。</div>';
+      : '<div>当前版本优先支持手动配置，不再展示自动配置二维码。</div>';
   }
 
   if (blockers) {
@@ -961,22 +1079,10 @@ function updateQuickChannelModal(session, updateQrImage = false) {
           `<div>${escHtml(session.blockerTitle || '当前卡点')}</div>`,
           ...session.blockers.map((item) => `<div>${escHtml(item.title)}：${escHtml(item.detail)}</div>`)
         ].join('')
-      : '<div>当前没有额外卡点说明。</div>';
+      : '<div>当前版本请改用手动配置。</div>';
   }
 
-  if (session.status === 'configured_pending_pairing') {
-    confirmBtn.textContent = '已配置，待配对';
-    confirmBtn.disabled = true;
-    stopQuickConfigPolling();
-    loadChannelsView();
-  } else if (!qrContent && !session.qrCode?.imageUrl) {
-    confirmBtn.textContent = '等待真实二维码来源';
-    confirmBtn.disabled = true;
-  } else if (session.status === 'failed') {
-    confirmBtn.textContent = '重新开始前先查看缺口';
-  } else {
-    confirmBtn.textContent = '推进到下一步';
-  }
+  confirmBtn.textContent = '知道了';
 }
 
 async function copyChannelPairingCommand() {
@@ -992,45 +1098,11 @@ async function copyChannelPairingCommand() {
 
 async function refreshChannelAfterQuickConfigSuccess() {
   await loadChannelsView();
-  switchChannelConfigMode('quick');
+  switchChannelConfigMode('manual');
 }
 
 async function confirmQuickChannelConfig() {
-  if (!activeQuickConfigSessionId) return;
-
-  const btn = document.getElementById('quickChannelConfirmBtn');
-  btn.disabled = true;
-  btn.textContent = '处理中...';
-
-  try {
-    const res = await fetch(`/api/channels/${encodeURIComponent(currentChannelKey)}/quick-config/${encodeURIComponent(activeQuickConfigSessionId)}/complete`, {
-      method: 'POST'
-    });
-    const data = await res.json();
-
-    if (!data.success) {
-      updateQuickChannelModal(data.session || {
-        status: 'failed',
-        message: data.error || '快捷配置未完成',
-        blockers: []
-      });
-      throw new Error(data.error || '快捷配置未完成');
-    }
-
-    updateQuickChannelModal(data.session, false);
-    if (data.session?.status === 'configured_pending_pairing') {
-      await refreshChannelAfterQuickConfigSuccess();
-    }
-  } catch (err) {
-    document.getElementById('quickChannelStatusText').textContent = err.message;
-    if (!btn.disabled) {
-      btn.textContent = '推进到下一步';
-    }
-  } finally {
-    if (document.getElementById('quickChannelConfirmBtn')?.disabled === false) {
-      document.getElementById('quickChannelConfirmBtn').textContent = '推进到下一步';
-    }
-  }
+  closeQuickChannelModal();
 }
 
 async function loadFeishuConfig() {

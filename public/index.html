@@ -16,11 +16,14 @@
       <div class="hero-mark">OpenClaw Control Surface</div>
       <div class="logo">ClawBox</div>
       <div class="subtitle">更快部署，更稳定管理，更清晰地掌控网关、模型与通道配置</div>
-      <div class="hero-tags">
-        <span class="hero-tag">Gateway</span>
-        <span class="hero-tag">Models</span>
-        <span class="hero-tag">Channels</span>
-        <span class="hero-tag">Skills</span>
+      <div class="hero-bottom">
+        <div class="hero-tags">
+          <span class="hero-tag">Gateway</span>
+          <span class="hero-tag">Models</span>
+          <span class="hero-tag">Channels</span>
+          <span class="hero-tag">Skills</span>
+        </div>
+        <button class="btn-dashboard-header" onclick="openOpenclawDashboard()">打开OpenClaw面板</button>
       </div>
     </header>
 
@@ -48,7 +51,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="install">安装</button>
       <button class="tab" data-tab="model">模型配置</button>
-      <button class="tab" data-tab="feishu">飞书通道</button>
+      <button class="tab" data-tab="channels">消息通道</button>
       <button class="tab" data-tab="skills">Skills</button>
       <button class="tab" data-tab="tools">工具</button>
     </nav>
@@ -94,89 +97,152 @@
       <div class="card">
         <div class="section-kicker">Models</div>
         <h2>模型配置</h2>
-        <p class="desc">配置 AI 模型的 API 密钥和模型选择</p>
+        <p class="desc">按 provider 追加管理模型，并在已添加模型之间快速切换应用。</p>
 
-        <div class="form-group">
-          <label>模型提供商</label>
-          <select id="modelProvider" onchange="onProviderChange()">
-            <option value="mimo">MIMO（推荐）</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="google">Google Gemini</option>
-            <option value="anthropic">Anthropic Claude</option>
-            <option value="openai">OpenAI</option>
-            <option value="custom">自定义</option>
-          </select>
-        </div>
-
-        <div class="form-group" id="mimoTierGroup">
-          <label>模型档位</label>
-          <div class="tier-selector" id="tierSelector">
-            <div class="tier-card" data-tier="omni" onclick="selectTier('omni')">
-              <div class="tier-name">Omni</div>
-              <div class="tier-desc">最强 · 全模态</div>
+        <div class="model-shell">
+          <section class="model-add-panel">
+            <div class="model-panel-head">
+              <div>
+                <div class="model-panel-kicker">添加模型</div>
+                <h3>连接你的推理提供商</h3>
+              </div>
+              <span class="model-panel-badge">Default Apply</span>
             </div>
-            <div class="tier-card active" data-tier="pro" onclick="selectTier('pro')">
-              <div class="tier-name">Pro</div>
-              <div class="tier-desc">平衡 · 推荐日常</div>
+
+            <div class="model-form-grid">
+              <div class="form-group">
+                <label>选择提供商</label>
+                <select id="modelProvider" onchange="onProviderChange()"></select>
+              </div>
+
+              <div class="form-group">
+                <label>选择版本</label>
+                <select id="modelVersion"></select>
+              </div>
             </div>
-            <div class="tier-card" data-tier="flash" onclick="selectTier('flash')">
-              <div class="tier-name">Flash</div>
-              <div class="tier-desc">最快 · 轻量任务</div>
+
+            <div class="form-group">
+              <label>API Key</label>
+              <div class="password-field">
+                <input type="password" id="apiKey" placeholder="输入 API Key">
+                <button type="button" class="input-toggle" id="toggleApiKeyBtn" onclick="toggleApiKeyVisibility()" aria-label="显示或隐藏 API Key">👁</button>
+              </div>
             </div>
-          </div>
-        </div>
 
-        <div class="form-group" id="modelSelectGroup">
-          <label>模型</label>
-          <select id="modelSelect"></select>
-        </div>
+            <div class="model-provider-note">
+              <div class="provider-note-main" id="providerDescription"></div>
+              <a id="providerApiLink" href="#" target="_blank" rel="noopener noreferrer">点击获取 API KEY</a>
+            </div>
 
-        <div class="form-group">
-          <label>API Key</label>
-          <input type="password" id="apiKey" placeholder="输入你的 API Key">
-          <div class="hint" id="apiKeyPreview"></div>
-        </div>
+            <div class="model-actions">
+              <button class="btn btn-primary" onclick="addModel()">添加为默认</button>
+              <span id="modelSaveMsg" class="save-msg"></span>
+            </div>
+          </section>
 
-        <div class="form-group" id="baseUrlGroup" style="display:none">
-          <label>API Base URL</label>
-          <input type="text" id="baseUrl" placeholder="https://api.example.com/v1">
-        </div>
+          <section class="model-switch-panel">
+            <div class="model-panel-head compact">
+              <div>
+                <div class="model-panel-kicker">Installed</div>
+                <h3>切换模型</h3>
+              </div>
+              <span class="model-panel-meta" id="modelCountMeta">0 models</span>
+            </div>
 
-        <button class="btn btn-primary" onclick="saveModelConfig()">
-          保存配置
-        </button>
-        <span id="modelSaveMsg" class="save-msg"></span>
+            <div id="modelList" class="switch-card-list">
+              <div class="empty-state">还没有已安装的模型，请先在上方完成接入。</div>
+            </div>
+          </section>
+        </div>
       </div>
     </section>
 
-    <!-- 飞书通道面板 -->
-    <section class="panel" id="panel-feishu">
+    <!-- 消息通道面板 -->
+    <section class="panel" id="panel-channels">
       <div class="card">
-        <div class="section-kicker">Channel</div>
-        <h2>飞书消息通道</h2>
-        <p class="desc">输入飞书机器人的凭证即可接入</p>
+        <div class="section-kicker">消息通道</div>
+        <h2>消息通道模块</h2>
+        <p class="desc">统一管理消息通道接入。当前版本以手动添加为主，快捷配置暂未开放。</p>
 
-        <div class="form-group">
-          <label>App ID</label>
-          <input type="text" id="feishuAppId" placeholder="cli_xxxxxxxxxxxx">
-        </div>
+        <section class="channel-shell">
+          <div class="channel-config-card channel-config-card-single">
+            <div class="channel-config-head">
+              <div>
+                <div class="model-panel-kicker">通道配置</div>
+                <h3 id="channelConfigTitle">手动添加消息通道</h3>
+              </div>
+              <span class="status-pill" id="channelSupportBadge">未配置</span>
+            </div>
 
-        <div class="form-group">
-          <label>App Secret</label>
-          <input type="password" id="feishuAppSecret" placeholder="输入 App Secret">
-        </div>
+            <div class="channel-card-topbar">
+              <div class="form-group channel-select-group">
+                <label for="channelSelect">选择通道</label>
+                <select id="channelSelect" onchange="selectChannel(this.value)"></select>
+                <div class="hint" id="channelSelectHint">加载中...</div>
+              </div>
+              <div class="channel-card-status">
+                <div class="channel-card-status-label">当前状态</div>
+                <div class="channel-card-status-value" id="channelStatusValue">未配置</div>
+              </div>
+            </div>
 
-        <div class="form-group">
-          <label class="checkbox-label">
-            <input type="checkbox" id="feishuStreaming" checked>
-            启用 Streaming 模式（实时回复）
-          </label>
-        </div>
+            <div class="channel-config-tabs">
+              <button class="channel-config-tab active" id="channelManualTab" type="button" onclick="switchChannelConfigMode('manual')">手动配置</button>
+              <button class="channel-config-tab is-disabled" id="channelQuickTab" type="button" disabled>快捷配置（敬请期待）</button>
+            </div>
 
-        <button class="btn btn-primary" onclick="saveFeishuConfig()">
-          保存配置
-        </button>
-        <span id="feishuSaveMsg" class="save-msg"></span>
+            <div class="channel-config-pane active" id="channelManualPane">
+              <div class="channel-quick-note" id="channelManualIntro">加载中...</div>
+
+              <div class="form-group">
+                <label>显示名称</label>
+                <input type="text" id="channelDisplayName" placeholder="例如：企业微信生产环境">
+                <div class="hint">用于区分当前通道配置，默认使用通道名称。</div>
+              </div>
+
+              <div id="channelDynamicFields" class="channel-dynamic-fields"></div>
+
+              <div class="channel-pairing-guide" id="channelPairingGuide" style="display:none">
+                <div class="channel-pairing-title">配对说明</div>
+                <div class="channel-pairing-desc" id="channelPairingDesc">保存后请根据指引继续完成配对。</div>
+                <div class="channel-pairing-command-row">
+                  <code id="channelPairingCommand">openclaw pairing approve feishu CODE</code>
+                  <button class="btn btn-secondary btn-sm" type="button" onclick="copyChannelPairingCommand()">复制命令</button>
+                </div>
+              </div>
+
+              <div class="channel-manual-actions">
+                <button class="btn btn-primary" type="button" onclick="saveChannelManualConfig()">添加并应用</button>
+                <span id="channelSaveMsg" class="save-msg"></span>
+              </div>
+
+              <div class="channel-card-footer">
+                <div class="channel-card-footer-text" id="channelFooterNote">当前版本优先支持手动配置。</div>
+                <a class="channel-detail-link" id="channelDetailLink" href="/channel-docs.html" target="_blank" rel="noopener noreferrer">查看详情</a>
+              </div>
+            </div>
+
+            <div class="channel-config-pane" id="channelQuickPane">
+              <div class="form-group">
+                <label>快捷配置状态</label>
+                <div class="channel-quick-note">当前版本暂未开放快捷配置。请使用上方“手动配置”完成添加与应用。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="channel-connected-card">
+            <div class="channel-config-head">
+              <div>
+                <div class="model-panel-kicker">已添加通道</div>
+                <h3>通道状态</h3>
+              </div>
+              <button class="btn btn-secondary btn-sm" type="button" onclick="loadChannelsView()">刷新</button>
+            </div>
+            <div id="connectedChannels" class="channel-connected-list">
+              <div class="empty-state">加载中...</div>
+            </div>
+          </div>
+        </section>
       </div>
     </section>
 
@@ -214,7 +280,6 @@
               <p class="tool-status" id="toolOpenclawStatus">检测中...</p>
             </div>
             <div class="tool-actions">
-              <button class="btn btn-primary btn-sm" onclick="openOpenclawDashboard()">打开面板</button>
               <button class="btn btn-secondary btn-sm" onclick="uninstallOpenclawTool()">卸载</button>
             </div>
           </div>
@@ -241,15 +306,30 @@
       <div class="card">
         <div class="section-kicker">Extensions</div>
         <h2>Skills 市场</h2>
-        <p class="desc">搜索并安装 ClawHub 上的 OpenClaw 技能</p>
+        <p class="desc">管理已安装的 Skills，或搜索安装新技能</p>
 
+        <!-- 搜索安装 -->
         <div class="search-bar">
-          <input type="text" id="skillSearch" placeholder="搜索 Skills..." onkeyup="onSkillSearchKeyup(event)">
+          <input type="text" id="skillSearch" placeholder="搜索 ClawHub Skills..." onkeyup="onSkillSearchKeyup(event)">
           <button class="btn btn-secondary" onclick="searchSkills()">搜索</button>
         </div>
 
-        <div id="skillResults" class="skill-grid">
+        <div id="skillResults" class="skill-search-results">
           <div class="empty-state">输入关键词搜索 ClawHub 上的 Skills</div>
+        </div>
+
+        <!-- 已安装 Skills -->
+        <div class="installed-skills-section">
+          <div class="model-panel-head compact" style="margin-bottom: 14px;">
+            <div>
+              <div class="model-panel-kicker">Installed</div>
+              <h3>已安装 Skills</h3>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="loadInstalledSkills()">刷新</button>
+          </div>
+          <div id="installedSkills" class="skill-grid">
+            <div class="empty-state">加载中...</div>
+          </div>
         </div>
       </div>
     </section>
@@ -270,6 +350,76 @@
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeUninstallModal()">取消</button>
         <button class="btn btn-danger" onclick="startUninstall()">确认卸载</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Skill 安装确认弹窗（腾讯云风格） -->
+  <div class="modal-overlay" id="skillInstallModal" style="display:none">
+    <div class="modal tencent-modal">
+      <div class="modal-header-row">
+        <h3>安装 Skill</h3>
+        <button class="modal-close-btn" onclick="closeSkillInstallModal()" aria-label="关闭">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-info-row">
+          <span class="modal-info-label">名称</span>
+          <span class="modal-info-value" id="modalSkillSlug"></span>
+        </div>
+        <div class="modal-info-row">
+          <span class="modal-info-label">描述</span>
+          <span class="modal-info-value" id="modalSkillDesc"></span>
+        </div>
+        <div class="modal-info-row">
+          <span class="modal-info-label">来源</span>
+          <span class="modal-info-value">ClawHub 市场</span>
+        </div>
+      </div>
+      <div id="modalInstallProgress" class="modal-progress" style="display:none">
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <span class="progress-text" id="progressText">安装中...</span>
+      </div>
+      <div class="modal-actions" id="modalActions">
+        <button class="btn btn-secondary" onclick="closeSkillInstallModal()">取消</button>
+        <button class="btn btn-primary" id="modalInstallBtn" onclick="confirmInstallSkill()">确认安装</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="channelQuickConfigModal" style="display:none">
+    <div class="modal tencent-modal channel-quick-modal">
+      <div class="modal-header-row">
+        <h3>快捷配置暂未开放</h3>
+        <button class="modal-close-btn" onclick="closeQuickChannelModal()" aria-label="关闭">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="channel-quick-modal-head">
+          <div>
+            <div class="modal-info-label">当前通道</div>
+            <div class="modal-info-value" id="quickChannelName">飞书</div>
+          </div>
+          <span class="status-pill" id="quickChannelStatusBadge">暂未开放</span>
+        </div>
+        <div class="channel-qr-card" id="quickChannelQrCard">
+          <img id="quickChannelQrImage" alt="快捷配置二维码" style="display:none">
+          <div class="channel-qr-placeholder" id="quickChannelQrPlaceholder">当前版本不展示自动配置二维码。</div>
+        </div>
+        <div class="channel-quick-blockers modal-blockers" id="quickChannelQrMeta">
+          <div>当前版本优先支持手动配置闭环。</div>
+        </div>
+        <div class="channel-quick-status" id="quickChannelStatusText">快捷配置暂未开放，请使用手动配置。</div>
+        <div class="channel-quick-blockers modal-blockers" id="quickChannelBlockers">
+          <div>飞书扫码自动创建应用/机器人能力已从当前版本主线收口。</div>
+        </div>
+        <div class="channel-quick-tips" id="quickChannelTips">
+          <div>1. 请在主卡片中手动填写通道凭证。</div>
+          <div>2. 点击“添加并应用”后即可启用通道。</div>
+          <div>3. 飞书仍需要手动完成 pairing approve。</div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" onclick="closeQuickChannelModal()">关闭</button>
+        <button class="btn btn-primary" type="button" id="quickChannelConfirmBtn" onclick="closeQuickChannelModal()">知道了</button>
       </div>
     </div>
   </div>

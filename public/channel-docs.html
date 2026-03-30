@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>消息通道配置说明</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1320;
+      --card: #101c2d;
+      --line: rgba(132, 173, 227, 0.18);
+      --text: #eef4ff;
+      --muted: #a6b9d2;
+      --accent: #70c4ff;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at top, rgba(64, 133, 208, 0.18), transparent 34%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+    }
+
+    .wrap {
+      width: min(880px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 40px 0 56px;
+    }
+
+    .hero,
+    .card {
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: rgba(16, 28, 45, 0.9);
+    }
+
+    .hero {
+      margin-bottom: 18px;
+    }
+
+    .hero p,
+    .card p,
+    .card li {
+      color: var(--muted);
+    }
+
+    .card + .card {
+      margin-top: 14px;
+    }
+
+    h1,
+    h2 {
+      margin: 0 0 12px;
+    }
+
+    ul {
+      margin: 12px 0 0;
+      padding-left: 18px;
+    }
+
+    code {
+      padding: 2px 6px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--accent);
+    }
+
+    a {
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <h1>消息通道配置说明</h1>
+      <p>当前版本优先支持手动添加与应用。飞书扫码自动创建应用/机器人能力暂未开放，本页仅提供各通道的字段说明和接入提示。</p>
+    </section>
+
+    <section class="card" id="wecom">
+      <h2>企业微信</h2>
+      <p>需要填写 <code>botId</code> 与 <code>secret</code>。保存后会立即启用该通道。</p>
+      <ul>
+        <li><code>botId</code>：企业微信机器人或应用对应的标识。</li>
+        <li><code>secret</code>：企业微信侧签发的密钥。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="dingtalk">
+      <h2>钉钉</h2>
+      <p>需要填写 <code>clientId</code> 与 <code>clientSecret</code>。保存后会立即启用该通道。</p>
+      <ul>
+        <li><code>clientId</code>：钉钉应用的 Client ID。</li>
+        <li><code>clientSecret</code>：钉钉应用的 Client Secret。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="qq">
+      <h2>QQ</h2>
+      <p>需要填写 <code>appId</code> 与 <code>appSecret</code>。保存后会立即启用该通道。</p>
+      <ul>
+        <li><code>appId</code>：QQ 应用标识。</li>
+        <li><code>appSecret</code>：QQ 应用密钥。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="yuanbao">
+      <h2>元宝</h2>
+      <p>需要填写 <code>appId</code> 与 <code>appSecret</code>。保存后会立即启用该通道。</p>
+      <ul>
+        <li><code>appId</code>：元宝应用标识。</li>
+        <li><code>appSecret</code>：元宝应用密钥。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="feishu">
+      <h2>飞书</h2>
+      <p>需要填写 <code>appId</code>、<code>appSecret</code>，并可选开启 Streaming 模式。保存后会进入“已配置，待配对”或“已接入”状态。</p>
+      <ul>
+        <li><code>appId</code>：飞书企业应用的 App ID。</li>
+        <li><code>appSecret</code>：飞书企业应用的 App Secret。</li>
+        <li>完成保存后，仍需在飞书侧拿到 pairing code，再执行 <code>openclaw pairing approve feishu CODE</code>。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

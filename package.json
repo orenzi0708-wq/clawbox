@@ -1,6 +1,6 @@
 {
   "name": "clawbox",
-  "version": "0.3.0",
+  "version": "0.4.5",
   "description": "ClawBox - 一键部署和管理 OpenClaw 的图形化工具",
   "main": "src/server.js",
   "bin": {

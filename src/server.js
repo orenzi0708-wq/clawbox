@@ -5,7 +5,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { exec, execSync } = require('child_process');
 const { installOpenClaw, updateOpenClaw, uninstallOpenClaw, isOpenClawInstalled, getOpenClawVersion, isGatewayRunning, getOS, checkNodeVersion, isRoot, searchClawHubSkills, installClawHubSkill, isClawHubAvailable, installClawHubCLI } = require('./installer');
-const { getModelConfig, updateModelConfig, switchModel, switchModelById, deleteModel, getFeishuConfig, updateFeishuConfig, getConfigSummary, getInstalledModels, getChannelCatalog, getChannelConfig, getChannelsState, upsertChannelConfig, removeChannelConfig } = require('./config');
+const { getModelConfig, updateModelConfig, switchModel, switchModelById, deleteModel, getFeishuConfig, updateFeishuConfig, getConfigSummary, getInstalledModels, getChannelCatalog, getChannelConfig, getChannelsState, normalizeManualChannelPayload, upsertChannelConfig, removeChannelConfig } = require('./config');
 
 function parseOpenclawDashboardUrlFromJson(payload) {
   if (!payload || typeof payload !== 'object') return null;
@@ -549,18 +549,70 @@ function startServer(port = 3456, devMode = false) {
   app.post('/api/channels/:channelKey/manual-config', (req, res) => {
     try {
       const key = req.params.channelKey;
-      const { appId, appSecret, streaming } = req.body;
-      if (!String(appId || '').trim() || !String(appSecret || '').trim()) {
-        return res.status(400).json({ success: false, error: '请完整填写 App ID 和 App Secret' });
+      const normalized = normalizeManualChannelPayload(key, req.body || {});
+      if (!normalized.ok) {
+        return res.status(400).json({ success: false, error: normalized.errors.join('，') });
       }
+      const current = getChannelConfig(key);
+      const schema = current?.schema?.credentials || getChannelCatalog().find((item) => item.key === key)?.schema?.credentials || [];
+      const missingFields = schema
+        .filter((field) => field.required)
+        .filter((field) => {
+          const nextValue = normalized.payload.credentials[field.key] !== undefined
+            ? normalized.payload.credentials[field.key]
+            : current?.credentials?.[field.key];
+          return !String(nextValue || '').trim();
+        })
+        .map((field) => field.label);
+      if (missingFields.length) {
+        return res.status(400).json({ success: false, error: `请填写${missingFields.join('、')}` });
+      }
+      const credentialsChanged = key === 'feishu'
+        ? schema.some((field) => {
+          const explicitValue = normalized.payload.credentials[field.key];
+          if (explicitValue === undefined) return false;
+          return String(explicitValue || '').trim() !== String(current?.credentials?.[field.key] || '').trim();
+        })
+        : false;
       const channel = upsertChannelConfig(key, {
-        appId,
-        appSecret,
-        streaming,
-        accessMode: 'manual',
-        status: 'configured_pending_pairing',
-        pairingStatus: 'pending',
+        ...normalized.payload,
+        enabled: true,
+        pairingStatus: key === 'feishu'
+          ? (credentialsChanged ? 'pending' : (current?.pairingStatus === 'paired' ? 'paired' : 'pending'))
+          : 'unpaired',
+        validation: {
+          status: 'pending',
+          message: ''
+        },
         lastError: ''
+      });
+      res.json({ success: true, channel });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post('/api/channels/:channelKey/enabled', (req, res) => {
+    try {
+      const key = req.params.channelKey;
+      const current = getChannelConfig(key);
+      if (!current) {
+        return res.status(404).json({ success: false, error: '消息通道不存在' });
+      }
+
+      const enabled = !!req.body?.enabled;
+      if (enabled && !current.configured) {
+        return res.status(400).json({ success: false, error: '请先完成通道配置，再启用该通道' });
+      }
+
+      const channel = upsertChannelConfig(key, {
+        enabled,
+        status: key === 'feishu'
+          ? (enabled ? (current.pairingStatus === 'paired' ? 'connected' : 'configured_pending_pairing') : 'configured')
+          : (enabled ? 'enabled' : 'configured'),
+        pairingStatus: key === 'feishu'
+          ? (enabled ? (current.pairingStatus === 'paired' ? 'paired' : 'pending') : (current.pairingStatus || 'unpaired'))
+          : 'unpaired'
       });
       res.json({ success: true, channel });
     } catch (err) {
@@ -608,11 +660,11 @@ function startServer(port = 3456, devMode = false) {
         updateQuickConfigSessionState(session, QUICK_CONFIG_STATUS.FAILED, {
           supported: false,
           nextAction: 'manual_fallback',
-          message: '当前通道未启用快捷配置，请使用手动配置。',
+          message: '当前版本仅开放手动配置，快捷配置暂未开放。',
           blockers: [{
             code: 'quick_config_disabled',
-            title: '快捷配置未启用',
-            detail: '该通道当前只开放手动配置。'
+            title: '快捷配置暂未开放',
+            detail: '当前版本优先交付手动添加闭环，请使用手动配置。'
           }]
         });
       } else if (!session.qrCode.content && !session.qrCode.imageUrl) {

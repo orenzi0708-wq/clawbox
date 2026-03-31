@@ -277,47 +277,36 @@ function getCommandOutput(error) {
 }
 
 function resolveClawHubBinary() {
-  const envWithPnpm = {
-    ...process.env,
-    PATH: `${process.env.PATH || ''}:/root/.local/share/pnpm:/usr/local/bin:${path.join(os.homedir(), '.local/bin')}`
-  };
-
-  try {
-    const found = execSync('command -v clawhub 2>/dev/null || which clawhub 2>/dev/null || echo ""', {
-      encoding: 'utf8',
-      timeout: 5000,
-      env: envWithPnpm
-    }).trim();
-    if (found && fs.existsSync(found)) {
-      return { command: found, env: envWithPnpm };
-    }
-  } catch {}
-
+  const env = getExtendedShellEnv();
   const cacheFile = path.join(os.homedir(), '.openclaw', 'clawhub-path.json');
+
   try {
     const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
     if (cache.path && fs.existsSync(cache.path)) {
       fs.accessSync(cache.path, fs.constants.X_OK);
-      return { command: cache.path, env: envWithPnpm };
+      return { command: cache.path, env };
     }
   } catch {}
 
-  const candidates = [
-    path.join(os.homedir(), '.local/share/pnpm/clawhub'),
-    path.join(os.homedir(), '.local/bin/clawhub'),
-    path.join(os.homedir(), '.nvm/current/bin/clawhub'),
-    '/usr/local/bin/clawhub',
-    '/usr/bin/clawhub'
-  ];
+  const found = resolveExecutablePath('clawhub', {
+    commonPaths: [
+      path.join(os.homedir(), '.local/share/pnpm/clawhub'),
+      path.join(os.homedir(), '.local/bin/clawhub'),
+      path.join(os.homedir(), '.nvm/current/bin/clawhub'),
+      '/usr/local/bin/clawhub',
+      '/usr/bin/clawhub'
+    ]
+  });
 
-  for (const candidate of candidates) {
+  if (found) {
     try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return { command: candidate, env: envWithPnpm };
+      fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+      fs.writeFileSync(cacheFile, JSON.stringify({ path: found, foundAt: Date.now() }));
     } catch {}
+    return { command: found, env };
   }
 
-  return { command: 'clawhub', env: envWithPnpm };
+  return { command: 'clawhub', env };
 }
 
 /**
@@ -688,5 +677,9 @@ module.exports = {
   searchClawHubSkills,
   installClawHubSkill,
   isClawHubAvailable,
-  installClawHubCLI
+  installClawHubCLI,
+  resolveExecutablePath,
+  resolveOpenClawPath,
+  resolveClawHubBinary,
+  getExtendedShellEnv
 };

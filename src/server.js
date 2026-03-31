@@ -4,7 +4,7 @@ const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
 const { exec, execSync } = require('child_process');
-const { installOpenClaw, updateOpenClaw, uninstallOpenClaw, isOpenClawInstalled, getOpenClawVersion, isGatewayRunning, getOS, checkNodeVersion, isRoot, searchClawHubSkills, installClawHubSkill, isClawHubAvailable, installClawHubCLI } = require('./installer');
+const { installOpenClaw, updateOpenClaw, uninstallOpenClaw, isOpenClawInstalled, getOpenClawVersion, isGatewayRunning, getOS, checkNodeVersion, isRoot, searchClawHubSkills, installClawHubSkill, isClawHubAvailable, installClawHubCLI, resolveClawHubBinary } = require('./installer');
 const { getModelConfig, updateModelConfig, switchModel, switchModelById, deleteModel, getFeishuConfig, updateFeishuConfig, getConfigSummary, getInstalledModels, getChannelCatalog, getChannelConfig, getChannelsState, normalizeManualChannelPayload, upsertChannelConfig, removeChannelConfig } = require('./config');
 
 function parseOpenclawDashboardUrlFromJson(payload) {
@@ -1083,8 +1083,6 @@ function startServer(port = 3456, devMode = false) {
   // 检查依赖状态
   app.get('/api/tools/status', (req, res) => {
     const result = {};
-    const extendedPath = `${process.env.PATH}:/root/.local/share/pnpm:/usr/local/bin:/usr/local/node-v24.14.0-linux-x64/bin`;
-    const env = { ...process.env, PATH: extendedPath };
 
     // Node.js — 优先用 which，找不到就用 process.version（当前Node进程一定存在）
     let nodeWhich = '';
@@ -1102,90 +1100,17 @@ function startServer(port = 3456, devMode = false) {
         result.node = { installed: true, version: process.version, path: nodeWhich };
       }
     } else if (process.version) {
-      // which 找不到但当前进程就是 Node，说明它存在只是 PATH 可能有问题
       result.node = { installed: true, version: process.version, path: process.execPath };
     } else {
       result.node = { installed: false };
     }
-    // ClawHub — 优先用 which/command -v，找不到再搜常见路径 + find
-    const fs = require('fs');
-    const path = require('path');
-    const CACHE_FILE = path.join(os.homedir(), '.openclaw', 'clawhub-path.json');
 
-    let clawhubFound = null;
-
-    // 1. 优先用 which（最权威）
-    try {
-      const whichResult = execSync('which clawhub 2>/dev/null || echo ""', {
-        encoding: 'utf8', timeout: 5000
-      }).trim();
-      if (whichResult && fs.existsSync(whichResult)) {
-        clawhubFound = whichResult;
-      }
-    } catch {}
-
-    // 2. which 没找到，读缓存（验证文件存在且可执行）
-    if (!clawhubFound) {
-      try {
-        const cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-        if (cache.path && fs.existsSync(cache.path)) {
-          try {
-            fs.accessSync(cache.path, fs.constants.X_OK);
-            clawhubFound = cache.path;
-          } catch {
-            fs.unlinkSync(CACHE_FILE);
-          }
-        }
-      } catch {}
-    }
-
-    // 3. 缓存也没命中，搜常见路径
-    if (!clawhubFound) {
-      const commonPaths = [
-        path.join(os.homedir(), '.local/share/pnpm/clawhub'),
-        path.join(os.homedir(), '.nvm/current/bin/clawhub'),
-        path.join(os.homedir(), '.local/bin/clawhub'),
-        '/usr/local/bin/clawhub',
-        '/usr/bin/clawhub'
-      ];
-      // 也搜 node 独立二进制目录下的 npm 全局 bin
-      try {
-        const nodeParent = path.dirname(path.dirname(process.execPath));
-        commonPaths.push(path.join(nodeParent, 'bin', 'clawhub'));
-      } catch {}
-      for (const p of commonPaths) {
-        try {
-          fs.accessSync(p, fs.constants.X_OK);
-          clawhubFound = p;
-          break;
-        } catch {}
-      }
-    }
-
-    // 4. 还没找到，find 全盘搜索（限 5 秒）
-    if (!clawhubFound) {
-      try {
-        const found = execSync(
-          'find /usr /opt /home /root /snap -name clawhub -type f -executable 2>/dev/null | head -1',
-          { encoding: 'utf8', timeout: 5000 }
-        ).trim();
-        if (found) clawhubFound = found;
-      } catch {}
-    }
-
-    // 找到了就缓存下来
-    if (clawhubFound) {
-      try {
-        fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
-        fs.writeFileSync(CACHE_FILE, JSON.stringify({ path: clawhubFound, foundAt: Date.now() }));
-      } catch {}
-    }
-
+    const { command: clawhubPath } = resolveClawHubBinary();
     result.clawhub = {
-      installed: !!clawhubFound,
-      path: clawhubFound
+      installed: clawhubPath !== 'clawhub',
+      path: clawhubPath !== 'clawhub' ? clawhubPath : null
     };
-    // OpenClaw
+
     result.openclaw = {
       installed: isOpenClawInstalled(),
       version: getOpenClawVersion()

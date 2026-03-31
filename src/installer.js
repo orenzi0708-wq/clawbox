@@ -40,12 +40,25 @@ function findString(value, candidatePaths) {
 }
 
 function getGatewayStatusJson(requireRpc = false) {
+  const openclawPath = resolveOpenClawPath();
+  if (!openclawPath) {
+    return {
+      ok: false,
+      status: null,
+      data: null,
+      stdout: '',
+      stderr: '',
+      error: '未找到 openclaw 可执行文件'
+    };
+  }
+
   const args = ['gateway', 'status', '--json'];
   if (requireRpc) args.push('--require-rpc');
 
-  const result = spawnSync('openclaw', args, {
+  const result = spawnSync(openclawPath, args, {
     encoding: 'utf8',
-    timeout: 15000
+    timeout: 15000,
+    env: getExtendedShellEnv()
   });
 
   const stdout = result.stdout || '';
@@ -145,11 +158,12 @@ function getExtendedShellEnv() {
   return { ...process.env, PATH: extendedPath };
 }
 
-function resolveOpenClawPath() {
+function resolveExecutablePath(commandName, options = {}) {
   const env = getExtendedShellEnv();
+  const commonPaths = [...(options.commonPaths || [])];
 
   try {
-    const whichResult = execSync('which openclaw 2>/dev/null || command -v openclaw 2>/dev/null || echo ""', {
+    const whichResult = execSync(`which ${commandName} 2>/dev/null || command -v ${commandName} 2>/dev/null || echo ""`, {
       encoding: 'utf8', timeout: 5000, env
     }).trim();
     if (whichResult) {
@@ -160,17 +174,9 @@ function resolveOpenClawPath() {
     }
   } catch {}
 
-  const commonPaths = [
-    path.join(os.homedir(), '.local/share/pnpm/openclaw'),
-    path.join(os.homedir(), '.nvm/current/bin/openclaw'),
-    path.join(os.homedir(), '.local/bin/openclaw'),
-    '/usr/local/bin/openclaw',
-    '/usr/bin/openclaw'
-  ];
-
   try {
     const nodeParent = path.dirname(path.dirname(process.execPath));
-    commonPaths.push(path.join(nodeParent, 'bin', 'openclaw'));
+    commonPaths.push(path.join(nodeParent, 'bin', commandName));
   } catch {}
 
   for (const p of commonPaths) {
@@ -180,15 +186,28 @@ function resolveOpenClawPath() {
     } catch {}
   }
 
+  const searchRoots = options.searchRoots || ['/usr', '/opt', '/home', '/root', '/snap'];
   try {
     const found = execSync(
-      'find /usr /opt /home /root /snap -name openclaw -type f -executable 2>/dev/null | head -1',
-      { encoding: 'utf8', timeout: 5000 }
+      `find ${searchRoots.join(' ')} -name ${commandName} -type f -executable 2>/dev/null | head -1`,
+      { encoding: 'utf8', timeout: 5000, env }
     ).trim();
     if (found) return found;
   } catch {}
 
   return null;
+}
+
+function resolveOpenClawPath() {
+  return resolveExecutablePath('openclaw', {
+    commonPaths: [
+      path.join(os.homedir(), '.local/share/pnpm/openclaw'),
+      path.join(os.homedir(), '.nvm/current/bin/openclaw'),
+      path.join(os.homedir(), '.local/bin/openclaw'),
+      '/usr/local/bin/openclaw',
+      '/usr/bin/openclaw'
+    ]
+  });
 }
 
 /**

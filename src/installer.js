@@ -130,26 +130,77 @@ function getOS() {
 }
 
 /**
+ * 解析 OpenClaw 可执行文件路径
+ */
+function getExtendedShellEnv() {
+  const extendedPath = [
+    process.env.PATH || '',
+    path.join(os.homedir(), '.local/share/pnpm'),
+    path.join(os.homedir(), '.nvm/current/bin'),
+    path.join(os.homedir(), '.local/bin'),
+    '/usr/local/bin',
+    '/usr/bin'
+  ].filter(Boolean).join(':');
+
+  return { ...process.env, PATH: extendedPath };
+}
+
+function resolveOpenClawPath() {
+  const env = getExtendedShellEnv();
+
+  try {
+    const whichResult = execSync('which openclaw 2>/dev/null || command -v openclaw 2>/dev/null || echo ""', {
+      encoding: 'utf8', timeout: 5000, env
+    }).trim();
+    if (whichResult) {
+      const realPath = execSync(`readlink -f "${whichResult}" 2>/dev/null || echo "${whichResult}"`, {
+        encoding: 'utf8', timeout: 5000, env
+      }).trim();
+      if (realPath && fs.existsSync(realPath)) return realPath;
+    }
+  } catch {}
+
+  const commonPaths = [
+    path.join(os.homedir(), '.local/share/pnpm/openclaw'),
+    path.join(os.homedir(), '.nvm/current/bin/openclaw'),
+    path.join(os.homedir(), '.local/bin/openclaw'),
+    '/usr/local/bin/openclaw',
+    '/usr/bin/openclaw'
+  ];
+
+  try {
+    const nodeParent = path.dirname(path.dirname(process.execPath));
+    commonPaths.push(path.join(nodeParent, 'bin', 'openclaw'));
+  } catch {}
+
+  for (const p of commonPaths) {
+    try {
+      fs.accessSync(p, fs.constants.X_OK);
+      return p;
+    } catch {}
+  }
+
+  try {
+    const found = execSync(
+      'find /usr /opt /home /root /snap -name openclaw -type f -executable 2>/dev/null | head -1',
+      { encoding: 'utf8', timeout: 5000 }
+    ).trim();
+    if (found) return found;
+  } catch {}
+
+  return null;
+}
+
+/**
  * 检查 OpenClaw 是否已安装
  */
 function isOpenClawInstalled() {
+  const openclawPath = resolveOpenClawPath();
+  if (!openclawPath) return false;
+
   try {
-    // 先检查可执行文件是否存在且指向真实文件
-    const whichResult = execSync('which openclaw 2>/dev/null || echo ""', {
-      encoding: 'utf8', timeout: 5000
-    }).trim();
-    if (!whichResult) return false;
-
-    // 检查文件是否指向真实存在的文件（处理悬空软链接）
-    const realPath = execSync(`readlink -f "${whichResult}" 2>/dev/null || echo "${whichResult}"`, {
-      encoding: 'utf8', timeout: 5000
-    }).trim();
-    const fs = require('fs');
-    if (!fs.existsSync(realPath)) return false;
-
-    // 最后验证命令是否能正常执行
-    const result = execSync('openclaw --version 2>/dev/null || echo "not_found"', {
-      encoding: 'utf8', timeout: 5000
+    const result = execSync(`"${openclawPath}" --version 2>/dev/null || echo "not_found"`, {
+      encoding: 'utf8', timeout: 5000, env: getExtendedShellEnv()
     });
     return !result.includes('not_found') && !result.includes('command not found');
   } catch {
@@ -161,10 +212,14 @@ function isOpenClawInstalled() {
  * 获取已安装的 OpenClaw 版本
  */
 function getOpenClawVersion() {
+  const openclawPath = resolveOpenClawPath();
+  if (!openclawPath) return null;
+
   try {
-    const result = execSync('openclaw --version 2>/dev/null', {
+    const result = execSync(`"${openclawPath}" --version 2>/dev/null`, {
       encoding: 'utf8',
-      timeout: 5000
+      timeout: 5000,
+      env: getExtendedShellEnv()
     });
     return result.trim();
   } catch {

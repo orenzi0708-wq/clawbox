@@ -768,10 +768,12 @@ body::before {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 18px;
+  padding: 0 6px;
 }
 
 .channel-refresh-btn {
   min-height: 34px;
+  flex-shrink: 0;
 }
 
 .channel-connected-header {
@@ -1825,6 +1827,11 @@ body::before {
   background: rgba(13, 23, 36, 0.94);
 }
 
+.skill-info {
+  flex: 1;
+  min-width: 0;
+}
+
 .skill-info h4 {
   font-size: 15px;
   font-weight: 700;
@@ -2029,6 +2036,16 @@ body::before {
 }
 
 .skill-card .btn-uninstall {
+  width: 88px;
+  min-width: 88px;
+  height: 40px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  text-align: center;
+  flex-shrink: 0;
   color: var(--error);
   border-color: rgba(255, 126, 142, 0.3);
   background: rgba(255, 126, 142, 0.08);
@@ -2168,7 +2185,6 @@ body::before {
     grid-template-columns: 1fr;
   }
 
-  .channel-connected-section-head,
   .channel-connected-header,
   .channel-connected-header-right,
   .channel-summary-row {
@@ -2176,9 +2192,25 @@ body::before {
     align-items: flex-start;
   }
 
+  .channel-connected-section-head {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 2px;
+  }
+
   .channel-card-footer {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .skill-card {
+    align-items: stretch;
+  }
+
+  .skill-card .btn-uninstall {
+    width: 88px;
+    align-self: center;
   }
 
   .channel-manual-actions {

@@ -533,7 +533,7 @@ body::before {
 }
 
 .channel-connected-card {
-  padding: 0;
+  padding: 20px 20px 18px;
   border: none;
 }
 
@@ -562,6 +562,7 @@ body::before {
 
 .channel-config-head h3,
 .channel-connected-section-head h3 {
+  margin: 0;
   color: var(--text);
   font-size: 18px;
   font-weight: 700;
@@ -768,7 +769,7 @@ body::before {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 18px;
-  padding: 0 6px;
+  padding: 0;
 }
 
 .channel-refresh-btn {
@@ -2192,11 +2193,15 @@ body::before {
     align-items: flex-start;
   }
 
+  .channel-connected-card {
+    padding: 18px 16px 16px;
+  }
+
   .channel-connected-section-head {
     flex-direction: row;
     align-items: center;
     justify-content: space-between;
-    padding: 0 2px;
+    padding: 0;
   }
 
   .channel-card-footer {

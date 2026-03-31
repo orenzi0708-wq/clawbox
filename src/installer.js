@@ -239,10 +239,12 @@ function resolveExecutablePath(commandName, options = {}) {
     // where 可能返回多行，取第一行
     const firstPath = whichResult.split('\n')[0].trim();
 
-    // Linux/macOS: 解析 symlink 真实路径
+    // 解析 symlink 真实路径（macOS 没有 readlink -f）
     let realPath = firstPath;
     if (PLATFORM !== 'win32') {
-      const resolved = runPlatformCommand(`readlink -f "${firstPath}" 2>/dev/null`);
+      const resolved = PLATFORM === 'darwin'
+        ? (() => { try { return fs.realpathSync(firstPath); } catch { return ''; } })()
+        : runPlatformCommand(`readlink -f "${firstPath}" 2>/dev/null`);
       if (resolved) realPath = resolved;
     }
 
@@ -308,7 +310,10 @@ function isOpenClawInstalled() {
   if (!openclawPath) return false;
 
   try {
-    const result = execSync(`"${openclawPath}" --version 2>/dev/null || echo "not_found"`, {
+    const cmd = PLATFORM === 'win32'
+      ? `"${openclawPath}" --version 2>nul || echo not_found`
+      : `"${openclawPath}" --version 2>/dev/null || echo "not_found"`;
+    const result = execSync(cmd, {
       encoding: 'utf8', timeout: 5000, env: getExtendedShellEnv()
     });
     return !result.includes('not_found') && !result.includes('command not found');
@@ -325,7 +330,10 @@ function getOpenClawVersion() {
   if (!openclawPath) return null;
 
   try {
-    const result = execSync(`"${openclawPath}" --version 2>/dev/null`, {
+    const cmd = PLATFORM === 'win32'
+      ? `"${openclawPath}" --version 2>nul`
+      : `"${openclawPath}" --version 2>/dev/null`;
+    const result = execSync(cmd, {
       encoding: 'utf8',
       timeout: 5000,
       env: getExtendedShellEnv()
@@ -433,12 +441,12 @@ async function installOpenClaw(onProgress) {
     report('detect_os', 'running', '检测操作系统...');
     const osType = getOS();
     if (osType === 'windows') {
-      report('detect_os', 'error', 'Windows 暂不支持，请使用 PowerShell 安装');
-      return { success: false, steps };
+      report('detect_os', 'done', 'Windows ✓');
+    } else {
+      report('detect_os', 'done', `${osType} ✓`);
     }
-    report('detect_os', 'done', `${osType} ✓`);
 
-    // Step 2: 检查 curl
+    // Step 2: 检查 curl（Windows 10+ 自带）
     report('check_curl', 'running', '检查 curl...');
     try {
       execSync('curl --version', { encoding: 'utf8', timeout: 5000 });
@@ -448,31 +456,18 @@ async function installOpenClaw(onProgress) {
     }
     report('check_curl', 'done', 'curl ✓');
 
-    // Step 3: 通过 install.sh 安装
-    const sudoPrefix = isRoot() ? '' : 'sudo ';
-    report('install_openclaw', 'running',
-      isRoot()
-        ? '正在通过官方脚本安装 OpenClaw（root 模式，无需密码）...'
-        : '正在通过官方脚本安装 OpenClaw（可能需要输入 sudo 密码）...');
+    // Step 3: 通过官方脚本安装 OpenClaw
+    if (PLATFORM === 'win32') {
+      // Windows: 使用 install.ps1 (PowerShell)
+      report('install_openclaw', 'running', '正在通过官方脚本安装 OpenClaw（PowerShell）...');
 
-    await new Promise((resolve, reject) => {
-      const scriptPath = path.join(os.tmpdir(), 'openclaw-install.sh');
-      const dlProc = exec(
-        `curl -fsSL --proto '=https' --tlsv1.2 -o "${scriptPath}" https://openclaw.ai/install.sh`,
-        { timeout: 60000, shell: '/bin/bash' }
-      );
-      dlProc.on('close', dlCode => {
-        if (dlCode !== 0) {
-          reject(new Error(`下载安装脚本失败，退出码: ${dlCode}`));
-          return;
-        }
-        const runCmd = `${sudoPrefix}bash "${scriptPath}" --no-onboard`;
-        const proc = exec(runCmd, { timeout: 300000, shell: '/bin/bash' });
+      await new Promise((resolve, reject) => {
+        const psCmd = `powershell -NoProfile -ExecutionPolicy Bypass -Command "& { \\$ErrorActionPreference='Stop'; irm https://openclaw.ai/install.ps1 | iex } -NoOnboard"`;
+        const proc = exec(psCmd, { timeout: 300000, shell: 'cmd.exe' });
         let output = '';
         proc.stdout?.on('data', data => { output += data; });
         proc.stderr?.on('data', data => { output += data; });
         proc.on('close', code => {
-          try { fs.unlinkSync(scriptPath); } catch {}
           if (code === 0) {
             resolve();
           } else {
@@ -480,14 +475,48 @@ async function installOpenClaw(onProgress) {
           }
         });
       });
-    });
+    } else {
+      // Linux/macOS: 使用 install.sh (bash)
+      const sudoPrefix = isRoot() ? '' : 'sudo ';
+      report('install_openclaw', 'running',
+        isRoot()
+          ? '正在通过官方脚本安装 OpenClaw（root 模式，无需密码）...'
+          : '正在通过官方脚本安装 OpenClaw（可能需要输入 sudo 密码）...');
+
+      await new Promise((resolve, reject) => {
+        const scriptPath = path.join(os.tmpdir(), 'openclaw-install.sh');
+        const dlProc = exec(
+          `curl -fsSL --proto '=https' --tlsv1.2 -o "${scriptPath}" https://openclaw.ai/install.sh`,
+          { timeout: 60000, shell: '/bin/bash' }
+        );
+        dlProc.on('close', dlCode => {
+          if (dlCode !== 0) {
+            reject(new Error(`下载安装脚本失败，退出码: ${dlCode}`));
+            return;
+          }
+          const runCmd = `${sudoPrefix}bash "${scriptPath}" --no-onboard`;
+          const proc = exec(runCmd, { timeout: 300000, shell: '/bin/bash' });
+          let output = '';
+          proc.stdout?.on('data', data => { output += data; });
+          proc.stderr?.on('data', data => { output += data; });
+          proc.on('close', code => {
+            try { fs.unlinkSync(scriptPath); } catch {}
+            if (code === 0) {
+              resolve();
+            } else {
+              reject(new Error(`安装脚本退出码: ${code}\n${output.slice(-500)}`));
+            }
+          });
+        });
+      });
+    }
     report('install_openclaw', 'done', 'OpenClaw 安装完成 ✓');
 
     // Step 4: 安装 ClawHub CLI（Skills 市场需要）
     report('install_clawhub', 'running', '安装 ClawHub CLI...');
     try {
       await new Promise((resolve, reject) => {
-        const clawhubCmd = isRoot()
+        const clawhubCmd = (isRoot() || PLATFORM === 'win32')
           ? 'npm --loglevel error --no-fund --no-audit install -g clawhub'
           : `sudo npm --loglevel error --no-fund --no-audit install -g clawhub`;
         const proc = exec(clawhubCmd, { timeout: 60000 });
@@ -522,7 +551,10 @@ async function installOpenClaw(onProgress) {
     // Step 7: 验证安装
     report('verify', 'running', '验证安装...');
     try {
-      const version = execSync('openclaw --version 2>/dev/null', {
+      const verifyCmd = PLATFORM === 'win32'
+        ? 'openclaw --version 2>nul'
+        : 'openclaw --version 2>/dev/null';
+      const version = execSync(verifyCmd, {
         encoding: 'utf8',
         timeout: 10000
       }).trim();
@@ -581,10 +613,20 @@ async function uninstallOpenClaw(onProgress) {
   // 检测函数：openclaw 是否还存在
   const isOpenClawGone = () => {
     try {
-      const which = execSync('which openclaw 2>/dev/null || echo ""', { encoding: 'utf8', timeout: 5000 }).trim();
+      const whichCmd = PLATFORM === 'win32'
+        ? 'where openclaw 2>nul || echo ""'
+        : 'which openclaw 2>/dev/null || echo ""';
+      const which = execSync(whichCmd, { encoding: 'utf8', timeout: 5000 }).trim();
       if (!which) return true; // 找不到说明已卸载
-      // 检查是否是悬空软链接
-      const realPath = execSync(`readlink -f "${which}" 2>/dev/null || echo "${which}"`, { encoding: 'utf8', timeout: 5000 }).trim();
+      // 跨平台解析真实路径
+      let realPath;
+      if (PLATFORM === 'darwin') {
+        try { realPath = fs.realpathSync(which); } catch { realPath = which; }
+      } else if (PLATFORM === 'win32') {
+        realPath = which; // Windows 没有 symlink 问题，路径就是真实路径
+      } else {
+        realPath = execSync(`readlink -f "${which}" 2>/dev/null || echo "${which}"`, { encoding: 'utf8', timeout: 5000 }).trim();
+      }
       return !fs.existsSync(realPath);
     } catch {
       return true;
@@ -610,12 +652,29 @@ async function uninstallOpenClaw(onProgress) {
     // Step 2: 验证是否卸载干净，没干净就手动删
     if (!isOpenClawGone()) {
       report('verify', 'running', '检测到 openclaw 仍存在，执行手动卸载...');
-      try {
-        execSync('sudo npm rm -g openclaw 2>/dev/null', { timeout: 60000 });
-      } catch {}
-      // 删除残留文件和软链接
-      execSync('sudo rm -f /usr/bin/openclaw /usr/local/bin/openclaw 2>/dev/null', { timeout: 10000 });
-      execSync('sudo rm -rf /usr/lib/node_modules/openclaw /usr/local/lib/node_modules/openclaw 2>/dev/null', { timeout: 30000 });
+      if (PLATFORM === 'win32') {
+        // Windows: npm 卸载 + 清理 npm 全局路径
+        try { execSync('npm rm -g openclaw', { timeout: 60000 }); } catch {}
+        const npmPrefix = process.env.APPDATA ? path.join(process.env.APPDATA, 'npm') : '';
+        if (npmPrefix) {
+          for (const f of ['openclaw.cmd', 'openclaw.ps1', 'openclaw']) {
+            try { fs.unlinkSync(path.join(npmPrefix, f)); } catch {}
+          }
+          try { fs.rmSync(path.join(npmPrefix, 'node_modules', 'openclaw'), { recursive: true, force: true }); } catch {}
+        }
+      } else {
+        // Linux/macOS
+        try { execSync('npm rm -g openclaw 2>/dev/null', { timeout: 60000 }); } catch {}
+        const binPaths = PLATFORM === 'darwin'
+          ? ['/usr/local/bin/openclaw', '/opt/homebrew/bin/openclaw']
+          : ['/usr/bin/openclaw', '/usr/local/bin/openclaw'];
+        const libPaths = PLATFORM === 'darwin'
+          ? ['/usr/local/lib/node_modules/openclaw', '/opt/homebrew/lib/node_modules/openclaw']
+          : ['/usr/lib/node_modules/openclaw', '/usr/local/lib/node_modules/openclaw'];
+        for (const p of [...binPaths, ...libPaths]) {
+          try { fs.rmSync(p, { recursive: true, force: true }); } catch {}
+        }
+      }
       report('verify', 'done', '手动卸载执行完毕');
     } else {
       report('verify', 'done', 'openclaw 已卸载 ✓');
@@ -623,7 +682,15 @@ async function uninstallOpenClaw(onProgress) {
 
     // Step 3: 再次验证
     if (!isOpenClawGone()) {
-      report('final_check', 'error', '⚠️ openclaw 仍存在，请手动执行: sudo npm rm -g openclaw');
+      let hint;
+      if (PLATFORM === 'darwin') {
+        hint = '⚠️ openclaw 仍存在，请手动执行: npm rm -g openclaw';
+      } else if (PLATFORM === 'win32') {
+        hint = '⚠️ openclaw 仍存在，请在 PowerShell 中执行: npm rm -g openclaw';
+      } else {
+        hint = '⚠️ openclaw 仍存在，请手动执行: sudo npm rm -g openclaw';
+      }
+      report('final_check', 'error', hint);
       return { success: false, steps };
     }
     report('final_check', 'done', '确认 openclaw 已完全移除 ✓');
@@ -649,12 +716,27 @@ async function uninstallOpenClaw(onProgress) {
       report('clean_workspace', 'done', '工作区删除跳过');
     }
 
-    // Step 5: 停止并删除 systemd 服务
-    report('clean_service', 'running', '清理 systemd 服务...');
+    // Step 5: 停止并删除服务（Linux=systemd, macOS=launchd, Windows=服务）
+    report('clean_service', 'running', '清理服务...');
     try {
-      await new Promise((resolve) => {
-        exec('systemctl --user disable --now openclaw-gateway.service 2>/dev/null; rm -f ~/.config/systemd/user/openclaw-gateway.service; systemctl --user daemon-reload', { timeout: 15000 }, () => resolve());
-      });
+      if (PLATFORM === 'darwin') {
+        // macOS: launchd
+        const label = 'com.openclaw.gateway';
+        const plistPath = path.join(homeDir, 'Library', 'LaunchAgents', `${label}.plist`);
+        await new Promise((resolve) => {
+          exec(`launchctl bootout "gui/${process.getuid()}/${label}" 2>/dev/null; rm -f "${plistPath}"`, { timeout: 15000 }, () => resolve());
+        });
+      } else if (PLATFORM === 'win32') {
+        // Windows: sc.exe
+        await new Promise((resolve) => {
+          exec('sc stop OpenClawGateway 2>nul & sc delete OpenClawGateway 2>nul', { timeout: 15000, shell: 'cmd.exe' }, () => resolve());
+        });
+      } else {
+        // Linux: systemd
+        await new Promise((resolve) => {
+          exec('systemctl --user disable --now openclaw-gateway.service 2>/dev/null; rm -f ~/.config/systemd/user/openclaw-gateway.service; systemctl --user daemon-reload', { timeout: 15000 }, () => resolve());
+        });
+      }
       report('clean_service', 'done', '服务已清理 ✓');
     } catch {
       report('clean_service', 'done', '服务清理跳过');

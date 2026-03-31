@@ -31,7 +31,10 @@ elif [ "$(uname)" = "Linux" ]; then
 fi
 
 if [ "$OS" = "unknown" ]; then
-  error "不支持的操作系统，仅支持 macOS 和 Linux"
+  echo ""
+  echo "  不支持的操作系统。请使用 Windows PowerShell 运行:"
+  echo "    powershell -ExecutionPolicy Bypass -File setup.ps1"
+  echo ""
   exit 1
 fi
 info "检测到: $OS"

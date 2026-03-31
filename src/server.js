@@ -1084,10 +1084,13 @@ function startServer(port = 3456, devMode = false) {
   app.get('/api/tools/status', (req, res) => {
     const result = {};
 
-    // Node.js — 优先用 which，找不到就用 process.version（当前Node进程一定存在）
+    // Node.js — 优先用 which/where，找不到就用 process.version
     let nodeWhich = '';
     try {
-      nodeWhich = execSync('which node 2>/dev/null || command -v node 2>/dev/null || echo ""', {
+      const whichCmd = os.platform() === 'win32'
+        ? 'where node 2>nul || echo ""'
+        : 'which node 2>/dev/null || command -v node 2>/dev/null || echo ""';
+      nodeWhich = execSync(whichCmd, {
         encoding: 'utf8', timeout: 5000
       }).trim();
     } catch {}
@@ -1123,7 +1126,51 @@ function startServer(port = 3456, devMode = false) {
     const nvmDir = process.env.NVM_DIR || `${os.homedir()}/.nvm`;
     const logs = [];
 
-    // 1. 用 which 找到真实路径
+    // Windows: 走 Windows 卸载逻辑
+    if (os.platform() === 'win32') {
+      // 1. 用 where 找到 node 路径
+      let whichPath = '';
+      try {
+        whichPath = execSync('where node 2>nul || echo ""', {
+          encoding: 'utf8', timeout: 5000
+        }).trim();
+      } catch {}
+
+      if (!whichPath) {
+        return res.json({ success: false, error: '未找到 node，可能已经卸载了' });
+      }
+      logs.push(`检测到 node 路径: ${whichPath}`);
+
+      // 2. 尝试通过 winget / choco / scoop 卸载
+      // winget
+      try {
+        execSync('winget uninstall OpenJS.NodeJS --silent', { timeout: 60000, shell: 'cmd.exe' });
+        logs.push('通过 winget 卸载完成');
+        return res.json({ success: true, message: `Node.js 已通过 winget 卸载\n${logs.join('\n')}` });
+      } catch { logs.push('winget 未安装或卸载失败'); }
+
+      // Chocolatey
+      try {
+        execSync('choco uninstall nodejs -y', { timeout: 60000, shell: 'cmd.exe' });
+        logs.push('通过 Chocolatey 卸载完成');
+        return res.json({ success: true, message: `Node.js 已通过 Chocolatey 卸载\n${logs.join('\n')}` });
+      } catch { logs.push('Chocolatey 未安装或卸载失败'); }
+
+      // Scoop
+      try {
+        execSync('scoop uninstall nodejs -p', { timeout: 60000, shell: 'cmd.exe' });
+        logs.push('通过 Scoop 卸载完成');
+        return res.json({ success: true, message: `Node.js 已通过 Scoop 卸载\n${logs.join('\n')}` });
+      } catch { logs.push('Scoop 未安装或卸载失败'); }
+
+      // 3. 所有包管理器都失败 — 提示用户手动卸载
+      return res.json({
+        success: false,
+        error: `无法自动卸载 Node.js。\n\n请通过以下方式之一卸载：\n1. 设置 → 应用 → 搜索 "Node.js" → 卸载\n2. winget uninstall OpenJS.NodeJS\n3. choco uninstall nodejs -y\n\n检测到路径: ${whichPath}\n${logs.join('\n')}`
+      });
+    }
+
+    // 1. 用 which 找到真实路径（Linux/macOS）
     let whichPath = '';
     try {
       whichPath = execSync('which node 2>/dev/null || command -v node 2>/dev/null || echo ""', {
@@ -1136,12 +1183,16 @@ function startServer(port = 3456, devMode = false) {
     }
     logs.push(`检测到 node 路径: ${whichPath}`);
 
-    // 获取真实路径（解析软链接）
+    // 获取真实路径（解析软链接，macOS 没有 readlink -f）
     let realPath = whichPath;
     try {
-      realPath = execSync(`readlink -f "${whichPath}" 2>/dev/null || echo "${whichPath}"`, {
-        encoding: 'utf8', timeout: 5000
-      }).trim();
+      if (os.platform() === 'darwin') {
+        realPath = fs.realpathSync(whichPath);
+      } else {
+        realPath = execSync(`readlink -f "${whichPath}" 2>/dev/null || echo "${whichPath}"`, {
+          encoding: 'utf8', timeout: 5000
+        }).trim();
+      }
     } catch {}
     logs.push(`真实路径: ${realPath}`);
 
@@ -1268,47 +1319,54 @@ function startServer(port = 3456, devMode = false) {
     const logs = [];
     const deleted = [];
 
-    // 1. 用 which/command -v 找到所有 clawhub 路径
+    const isWindows = os.platform() === 'win32';
+
+    // 1. 用 where/which/command -v 找到所有 clawhub 路径
     let whichPaths = [];
     try {
-      const result = execSync(
-        'which clawhub 2>/dev/null; command -v clawhub 2>/dev/null; echo ""',
-        { encoding: 'utf8', timeout: 5000 }
-      ).trim();
+      const cmd = isWindows
+        ? 'where clawhub 2>nul || echo ""'
+        : 'which clawhub 2>/dev/null; command -v clawhub 2>/dev/null; echo ""';
+      const result = execSync(cmd, { encoding: 'utf8', timeout: 5000 }).trim();
       if (result) {
         whichPaths = [...new Set(result.split('\n').filter(Boolean))];
       }
     } catch {}
 
-    // 2. 额外搜索常见位置（以防 which 漏掉）
-    const extraSearchDirs = [
-      `${os.homedir()}/.local/share/pnpm`,
-      `${os.homedir()}/.local/bin`,
-      `${os.homedir()}/.nvm`,
-      '/usr/local/bin',
-      '/usr/bin'
-    ];
+    // 2. 额外搜索常见位置（以防 where/which 漏掉）
+    const extraSearchDirs = isWindows
+      ? [
+          path.join(os.homedir(), 'scoop', 'shims'),
+          process.env.APPDATA ? path.join(process.env.APPDATA, 'npm') : '',
+          process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'pnpm') : ''
+        ].filter(Boolean)
+      : [
+          `${os.homedir()}/.local/share/pnpm`,
+          `${os.homedir()}/.local/bin`,
+          `${os.homedir()}/.nvm`,
+          '/usr/local/bin',
+          '/usr/bin'
+        ];
 
-    // 也搜 pnpm 全局存储
-    const pnpmGlobal = `${os.homedir()}/.local/share/pnpm/global`;
-    if (fs.existsSync(pnpmGlobal)) {
-      extraSearchDirs.push(pnpmGlobal);
+    // 也搜 pnpm 全局存储（非 Windows）
+    if (!isWindows) {
+      const pnpmGlobal = `${os.homedir()}/.local/share/pnpm/global`;
+      if (fs.existsSync(pnpmGlobal)) {
+        extraSearchDirs.push(pnpmGlobal);
+      }
     }
 
     for (const dir of extraSearchDirs) {
-      if (!fs.existsSync(dir)) continue;
+      if (!dir || !fs.existsSync(dir)) continue;
       try {
-        const found = execSync(
-          `find "${dir}" -maxdepth 5 \\( -name "clawhub" -o -name "clawhub.js" \\) -type f 2>/dev/null`,
-          { encoding: 'utf8', timeout: 5000 }
-        ).trim();
+        const found = isWindows
+          ? execSync(`dir /s /b "${dir}\\clawhub.cmd" "${dir}\\clawhub.exe" "${dir}\\clawhub" 2>nul`, { encoding: 'utf8', timeout: 5000 }).trim()
+          : execSync(`find "${dir}" -maxdepth 5 \\( -name "clawhub" -o -name "clawhub.js" \\) -type f 2>/dev/null`, { encoding: 'utf8', timeout: 5000 }).trim();
         if (found) {
-          found.split('\n').filter(Boolean).forEach(p => whichPaths.push(p));
+          found.split('\n').filter(Boolean).forEach(p => whichPaths.push(p.trim()));
         }
       } catch {}
     }
-
-    whichPaths = [...new Set(whichPaths)]; // 去重
 
     if (whichPaths.length === 0) {
       // 彻底找不到，清理缓存后报告
@@ -1322,11 +1380,15 @@ function startServer(port = 3456, devMode = false) {
     logs.push(`找到 ${whichPaths.length} 个 clawhub 文件:`);
     whichPaths.forEach(p => logs.push(`  ${p}`));
 
-    // 3. 删除所有找到的文件（用 sudo rm -f，/usr/bin 等目录需要权限）
+    // 3. 删除所有找到的文件
     for (const p of whichPaths) {
       try {
         if (fs.existsSync(p)) {
-          execSync(`sudo rm -f "${p}"`, { timeout: 5000 });
+          if (isWindows) {
+            fs.unlinkSync(p);
+          } else {
+            execSync(`sudo rm -f "${p}"`, { timeout: 5000 });
+          }
           deleted.push(p);
           logs.push(`已删除: ${p}`);
         }
@@ -1344,10 +1406,13 @@ function startServer(port = 3456, devMode = false) {
       }
     } catch {}
 
-    // 5. 验证：which 应该找不到了
+    // 5. 验证：where/which 应该找不到了
     let stillExists = false;
     try {
-      const afterWhich = execSync('which clawhub 2>/dev/null || command -v clawhub 2>/dev/null || echo ""', {
+      const verifyCmd = isWindows
+        ? 'where clawhub 2>nul || echo ""'
+        : 'which clawhub 2>/dev/null || command -v clawhub 2>/dev/null || echo ""';
+      const afterWhich = execSync(verifyCmd, {
         encoding: 'utf8', timeout: 5000
       }).trim();
       if (afterWhich) {
@@ -1372,23 +1437,29 @@ function startServer(port = 3456, devMode = false) {
   // 卸载 ClawBox 自身 — 用临时脚本删除自己的目录
   app.post('/api/tools/uninstall-clawbox', (req, res) => {
     const clawboxDir = path.join(__dirname, '..');
-    const scriptPath = '/tmp/clawbox_self_uninstall.sh';
 
-    // 生成卸载脚本
-    const script = `#!/bin/bash
+    if (os.platform() === 'win32') {
+      // Windows: 用 PowerShell 后台删除
+      const psScript = `Start-Sleep -Seconds 2; Remove-Item -Recurse -Force "${clawboxDir}" -ErrorAction SilentlyContinue`;
+      exec(`powershell -WindowStyle Hidden -Command "& { ${psScript} }"`, { shell: 'cmd.exe' });
+      res.json({ success: true, message: 'ClawBox 正在卸载...' });
+      setTimeout(() => process.exit(0), 500);
+    } else {
+      // Linux/macOS: 用 bash 脚本
+      const scriptPath = '/tmp/clawbox_self_uninstall.sh';
+      const script = `#!/bin/bash
 sleep 2
 rm -rf "${clawboxDir}"
 rm -f "${scriptPath}"
 `;
-    try {
-      fs.writeFileSync(scriptPath, script, { mode: 0o755 });
-      // 后台执行脚本，然后退出进程
-      exec(`nohup bash ${scriptPath} &>/dev/null &`);
-      res.json({ success: true, message: 'ClawBox 正在卸载...' });
-      // 延迟退出，确保响应发出
-      setTimeout(() => process.exit(0), 500);
-    } catch (err) {
-      res.json({ success: false, error: `生成卸载脚本失败: ${err.message}` });
+      try {
+        fs.writeFileSync(scriptPath, script, { mode: 0o755 });
+        exec(`nohup bash ${scriptPath} &>/dev/null &`);
+        res.json({ success: true, message: 'ClawBox 正在卸载...' });
+        setTimeout(() => process.exit(0), 500);
+      } catch (err) {
+        res.json({ success: false, error: `生成卸载脚本失败: ${err.message}` });
+      }
     }
   });
 
@@ -1398,7 +1469,10 @@ rm -f "${scriptPath}"
       let dashboardUrl = null;
 
       try {
-        const jsonOutput = execSync('openclaw gateway status --json 2>/dev/null', {
+        const statusCmd = os.platform() === 'win32'
+          ? 'openclaw gateway status --json 2>nul'
+          : 'openclaw gateway status --json 2>/dev/null';
+        const jsonOutput = execSync(statusCmd, {
           encoding: 'utf8',
           timeout: 10000
         }).trim();
@@ -1410,7 +1484,10 @@ rm -f "${scriptPath}"
       } catch {}
 
       if (!dashboardUrl) {
-        const textOutput = execSync('openclaw gateway status 2>/dev/null', {
+        const textStatusCmd = os.platform() === 'win32'
+          ? 'openclaw gateway status 2>nul'
+          : 'openclaw gateway status 2>/dev/null';
+        const textOutput = execSync(textStatusCmd, {
           encoding: 'utf8',
           timeout: 10000
         });

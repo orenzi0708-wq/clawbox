@@ -3,6 +3,9 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+const PLATFORM = os.platform(); // 'linux' | 'darwin' | 'win32'
+const PATH_SEP = PLATFORM === 'win32' ? ';' : ':';
+
 function parseJsonWithDetails(raw) {
   if (!raw) return null;
   try {
@@ -143,42 +146,116 @@ function getOS() {
 }
 
 /**
- * 解析 OpenClaw 可执行文件路径
+ * 按平台返回扩展 PATH 的搜索目录列表
+ */
+function getExtendedPathDirs() {
+  const home = os.homedir();
+
+  const common = [
+    path.join(home, '.local/bin'),
+    path.join(home, '.local/share/pnpm'),
+    path.join(home, '.nvm/current/bin'),
+  ];
+
+  switch (PLATFORM) {
+    case 'darwin':
+      return [
+        '/opt/homebrew/bin',       // Apple Silicon Homebrew
+        '/usr/local/bin',          // Intel Homebrew
+        ...common,
+      ];
+
+    case 'win32':
+      return [
+        path.join(home, 'scoop/shims'),
+        'C:\\ProgramData\\chocolatey\\bin',
+        path.join(process.env.APPDATA || '', 'npm'),
+        path.join(process.env.LOCALAPPDATA || '', 'pnpm'),
+      ];
+
+    default: // linux
+      return [
+        '/usr/local/bin',
+        '/usr/bin',
+        ...common,
+      ];
+  }
+}
+
+/**
+ * 构造扩展后的 env 对象（PATH 里补上常见安装位置）
  */
 function getExtendedShellEnv() {
+  const extraDirs = getExtendedPathDirs();
   const extendedPath = [
     process.env.PATH || '',
-    path.join(os.homedir(), '.local/share/pnpm'),
-    path.join(os.homedir(), '.nvm/current/bin'),
-    path.join(os.homedir(), '.local/bin'),
-    '/usr/local/bin',
-    '/usr/bin'
-  ].filter(Boolean).join(':');
+    ...extraDirs,
+  ].filter(Boolean).join(PATH_SEP);
 
   return { ...process.env, PATH: extendedPath };
 }
 
+/**
+ * 按平台执行 shell 命令并返回输出
+ * @param {string|object} commands - 字符串或 { linux, darwin, win32, default }
+ * @param {number} timeout
+ * @returns {string}
+ */
+function runPlatformCommand(commands, timeout = 5000) {
+  const cmd = typeof commands === 'string'
+    ? commands
+    : (commands[PLATFORM] || commands.default || '');
+
+  if (!cmd) return '';
+
+  try {
+    return execSync(cmd, {
+      encoding: 'utf8',
+      timeout,
+      env: getExtendedShellEnv(),
+      shell: PLATFORM === 'win32' ? undefined : '/bin/sh',
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 跨平台解析可执行文件路径
+ */
 function resolveExecutablePath(commandName, options = {}) {
   const env = getExtendedShellEnv();
   const commonPaths = [...(options.commonPaths || [])];
+  const exeName = PLATFORM === 'win32' ? `${commandName}.exe` : commandName;
 
-  try {
-    const whichResult = execSync(`which ${commandName} 2>/dev/null || command -v ${commandName} 2>/dev/null || echo ""`, {
-      encoding: 'utf8', timeout: 5000, env
-    }).trim();
-    if (whichResult) {
-      const realPath = execSync(`readlink -f "${whichResult}" 2>/dev/null || echo "${whichResult}"`, {
-        encoding: 'utf8', timeout: 5000, env
-      }).trim();
-      if (realPath && fs.existsSync(realPath)) return realPath;
+  // 1. 用平台命令查找
+  const whichResult = runPlatformCommand(
+    PLATFORM === 'win32'
+      ? `where ${commandName} 2>nul`
+      : `which ${commandName} 2>/dev/null || command -v ${commandName} 2>/dev/null`
+  );
+
+  if (whichResult) {
+    // where 可能返回多行，取第一行
+    const firstPath = whichResult.split('\n')[0].trim();
+
+    // Linux/macOS: 解析 symlink 真实路径
+    let realPath = firstPath;
+    if (PLATFORM !== 'win32') {
+      const resolved = runPlatformCommand(`readlink -f "${firstPath}" 2>/dev/null`);
+      if (resolved) realPath = resolved;
     }
-  } catch {}
 
+    if (fs.existsSync(realPath)) return realPath;
+  }
+
+  // 2. 从当前 Node 进程路径推算
   try {
     const nodeParent = path.dirname(path.dirname(process.execPath));
     commonPaths.push(path.join(nodeParent, 'bin', commandName));
   } catch {}
 
+  // 3. 常见路径列表直接检查
   for (const p of commonPaths) {
     try {
       fs.accessSync(p, fs.constants.X_OK);
@@ -186,28 +263,41 @@ function resolveExecutablePath(commandName, options = {}) {
     } catch {}
   }
 
-  const searchRoots = options.searchRoots || ['/usr', '/opt', '/home', '/root', '/snap'];
-  try {
-    const found = execSync(
-      `find ${searchRoots.join(' ')} -name ${commandName} -type f -executable 2>/dev/null | head -1`,
-      { encoding: 'utf8', timeout: 5000, env }
-    ).trim();
+  // 4. 全盘搜索（Windows 跳过，太慢且不可靠）
+  if (PLATFORM !== 'win32') {
+    const searchRoots = options.searchRoots || ['/usr', '/opt', '/home', os.homedir()];
+    const found = runPlatformCommand(
+      `find ${searchRoots.join(' ')} -name "${exeName}" -type f -executable 2>/dev/null | head -1`
+    );
     if (found) return found;
-  } catch {}
+  }
 
   return null;
 }
 
 function resolveOpenClawPath() {
-  return resolveExecutablePath('openclaw', {
-    commonPaths: [
-      path.join(os.homedir(), '.local/share/pnpm/openclaw'),
-      path.join(os.homedir(), '.nvm/current/bin/openclaw'),
-      path.join(os.homedir(), '.local/bin/openclaw'),
-      '/usr/local/bin/openclaw',
-      '/usr/bin/openclaw'
-    ]
-  });
+  const home = os.homedir();
+  const commonPaths = [
+    path.join(home, '.local/share/pnpm/openclaw'),
+    path.join(home, '.nvm/current/bin/openclaw'),
+    path.join(home, '.local/bin/openclaw'),
+  ];
+
+  if (PLATFORM === 'darwin') {
+    commonPaths.push(
+      '/opt/homebrew/bin/openclaw',
+      '/usr/local/bin/openclaw'
+    );
+  } else if (PLATFORM === 'win32') {
+    commonPaths.push(
+      path.join(home, 'scoop/shims/openclaw.exe'),
+      path.join(process.env.APPDATA || '', 'npm/openclaw.cmd'),
+    );
+  } else {
+    commonPaths.push('/usr/local/bin/openclaw', '/usr/bin/openclaw');
+  }
+
+  return resolveExecutablePath('openclaw', { commonPaths });
 }
 
 /**
@@ -255,9 +345,17 @@ function isGatewayRunning() {
 }
 
 /**
- * 检查是否是 root 用户
+ * 检查是否是管理员/Root 用户
  */
 function isRoot() {
+  if (PLATFORM === 'win32') {
+    try {
+      execSync('net session 2>nul', { encoding: 'utf8', timeout: 3000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
   try {
     return process.getuid && process.getuid() === 0;
   } catch {
@@ -288,15 +386,25 @@ function resolveClawHubBinary() {
     }
   } catch {}
 
-  const found = resolveExecutablePath('clawhub', {
-    commonPaths: [
-      path.join(os.homedir(), '.local/share/pnpm/clawhub'),
-      path.join(os.homedir(), '.local/bin/clawhub'),
-      path.join(os.homedir(), '.nvm/current/bin/clawhub'),
-      '/usr/local/bin/clawhub',
-      '/usr/bin/clawhub'
-    ]
-  });
+  const home = os.homedir();
+  const commonPaths = [
+    path.join(home, '.local/share/pnpm/clawhub'),
+    path.join(home, '.local/bin/clawhub'),
+    path.join(home, '.nvm/current/bin/clawhub'),
+  ];
+
+  if (PLATFORM === 'darwin') {
+    commonPaths.push('/opt/homebrew/bin/clawhub', '/usr/local/bin/clawhub');
+  } else if (PLATFORM === 'win32') {
+    commonPaths.push(
+      path.join(home, 'scoop/shims/clawhub.exe'),
+      path.join(process.env.APPDATA || '', 'npm/clawhub.cmd'),
+    );
+  } else {
+    commonPaths.push('/usr/local/bin/clawhub', '/usr/bin/clawhub');
+  }
+
+  const found = resolveExecutablePath('clawhub', { commonPaths });
 
   if (found) {
     try {

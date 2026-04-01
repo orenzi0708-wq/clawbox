@@ -435,13 +435,6 @@ body::before {
 
 .channel-console-card {
   color: var(--text);
-  border-color: rgba(145, 184, 238, 0.16);
-  background:
-    radial-gradient(circle at top right, rgba(74, 148, 255, 0.08), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 24%),
-    rgba(8, 15, 25, 0.88);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  backdrop-filter: blur(10px);
 }
 
 .channel-console-kicker {

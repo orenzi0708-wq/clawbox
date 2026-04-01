@@ -1345,18 +1345,20 @@ body::before {
 .switch-status {
   display: inline-flex;
   align-items: center;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-  background: rgba(255, 126, 142, 0.1);
+  gap: 6px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
 .switch-status.active {
-  background: rgba(77, 224, 166, 0.1);
   color: var(--success);
+}
+
+.switch-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .switch-card-right {

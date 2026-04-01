@@ -446,7 +446,10 @@ function renderModelCards() {
           <div class="switch-card-left">
             <span class="switch-triangle ${isExpanded ? 'open' : ''}">▶</span>
             <span class="switch-provider-name">${escHtml(providerLabel)}</span>
-            <span class="switch-status ${isActive ? 'active' : ''}">${isActive ? '🟢应用中' : '🔴未应用'}</span>
+            <span class="switch-status ${isActive ? 'active' : ''}">
+              <span class="switch-status-dot"></span>
+              <span>${isActive ? '已应用' : '未应用'}</span>
+            </span>
           </div>
           <div class="switch-card-right">
             <button class="switch-delete-btn" onclick="event.stopPropagation(); deleteModel('${escHtml(provider)}')" title="删除此 Provider">

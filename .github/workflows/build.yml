@@ -73,7 +73,7 @@ jobs:
             cp package.json src-tauri/server/
             cd src-tauri/server && npm install --omit=dev --ignore-scripts && cd ../..
             # Build
-            cd src-tauri && cargo install tauri-cli && cargo tauri build --target x86_64-unknown-linux-gnu --targets deb,rpm
+            cd src-tauri && cargo install tauri-cli && cargo tauri build --target x86_64-unknown-linux-gnu --bundles deb,rpm
           '
 
       - name: Build macOS/Windows
@@ -94,7 +94,7 @@ jobs:
             TAURI_TARGETS="msi,nsis"
           fi
           cargo install tauri-cli
-          cargo tauri build --target ${{ matrix.target }} --targets $TAURI_TARGETS
+          cargo tauri build --target ${{ matrix.target }} --bundles $TAURI_TARGETS
 
       - name: Upload artifacts (Linux)
         if: runner.os == 'Linux'

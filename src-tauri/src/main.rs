@@ -354,12 +354,19 @@ fn main() {
                             app.manage(Mutex::new(AppState {
                                 server_process: Some(child),
                             }));
-                            if wait_for_server(3456, 15) {
+                            if wait_for_server(3456, 30) {
                                 if let Some(window) = app.get_webview_window("main") {
                                     let _ = window.navigate("http://127.0.0.1:3456".parse().unwrap());
                                 }
                             } else {
-                                eprintln!("Warning: Server did not start within timeout");
+                                eprintln!("Warning: Server did not start within 30s");
+                                // Show setup page with retry hint instead of error
+                                let platform = detect_platform();
+                                let html = setup_page_html(platform);
+                                if let Some(window) = app.get_webview_window("main") {
+                                    let _ = window.set_title("ClawBox — 等待启动");
+                                    let _ = window.eval(&format!("document.open(); document.write({}); document.close();", serde_json::to_string(&html).unwrap()));
+                                }
                             }
                         }
                         Err(e) => {

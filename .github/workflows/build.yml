@@ -46,18 +46,6 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install dependencies
-        run: npm install
-
-      - name: Prepare server resources
-        shell: bash
-        run: |
-          mkdir -p src-tauri/server/src src-tauri/server/public
-          cp src/server.js src-tauri/server/src/
-          cp -r public/* src-tauri/server/public/
-          cp package.json src-tauri/server/
-          cp -r node_modules src-tauri/server/
-
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -69,35 +57,23 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Build (cargo)
+      - name: Install dependencies & prepare resources
         shell: bash
         run: |
-          cd src-tauri
-          cargo build --release --target ${{ matrix.target }}
+          npm install --ignore-scripts
+          mkdir -p src-tauri/server/src src-tauri/server/public
+          cp src/server.js src-tauri/server/src/
+          cp -r public/* src-tauri/server/public/
+          cp package.json src-tauri/server/
+          cp -r node_modules src-tauri/server/
 
-      - name: Build bundle (Linux)
-        if: runner.os == 'Linux'
+      - name: Install Tauri CLI
         shell: bash
-        run: |
-          cd src-tauri
-          cargo install tauri-cli 2>/dev/null || true
-          cargo tauri build --target ${{ matrix.target }} 2>&1 || true
+        run: cargo install tauri-cli
 
-      - name: Build bundle (macOS)
-        if: runner.os == 'macOS'
+      - name: Build
         shell: bash
-        run: |
-          cd src-tauri
-          cargo install tauri-cli 2>/dev/null || true
-          cargo tauri build --target ${{ matrix.target }} 2>&1 || true
-
-      - name: Build bundle (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          cd src-tauri
-          cargo install tauri-cli 2>/dev/null || true
-          cargo tauri build --target ${{ matrix.target }} 2>&1 || true
+        run: cd src-tauri && cargo tauri build --target ${{ matrix.target }}
 
       - name: Upload artifacts (Linux)
         if: runner.os == 'Linux'
@@ -107,7 +83,6 @@ jobs:
           path: |
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
-            src-tauri/target/${{ matrix.target }}/release/clawbox
           if-no-files-found: warn
 
       - name: Upload artifacts (macOS)
@@ -117,7 +92,6 @@ jobs:
           name: clawbox-${{ matrix.name }}
           path: |
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
-            src-tauri/target/${{ matrix.target }}/release/clawbox
           if-no-files-found: warn
 
       - name: Upload artifacts (Windows)
@@ -128,5 +102,4 @@ jobs:
           path: |
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
-            src-tauri/target/${{ matrix.target }}/release/clawbox.exe
           if-no-files-found: warn

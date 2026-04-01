@@ -65,10 +65,11 @@ jobs:
             curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             source $HOME/.cargo/env
             rustup target add x86_64-unknown-linux-gnu
+            set -e
             # Prepare server resources
             mkdir -p src-tauri/server/src src-tauri/server/public src-tauri/server/node_modules
             cp src/server.js src-tauri/server/src/
-            cp -r public/* src-tauri/server/public/
+            cp -r public/. src-tauri/server/public/
             cp package.json src-tauri/server/
             cd src-tauri/server && npm install --omit=dev --ignore-scripts && cd ../..
             # Build
@@ -81,11 +82,12 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
         run: |
+          set -e
           mkdir -p src-tauri/server/src src-tauri/server/public src-tauri/server/node_modules
           cp src/server.js src-tauri/server/src/
-          cp -r public/* src-tauri/server/public/
+          cp -r public/. src-tauri/server/public/
           cp package.json src-tauri/server/
-          cd src-tauri/server && npm install --omit=dev --ignore-scripts
+          cd src-tauri/server && npm install --omit=dev --ignore-scripts && cd ../..
           cargo install tauri-cli
           cargo tauri build --target ${{ matrix.target }}
 

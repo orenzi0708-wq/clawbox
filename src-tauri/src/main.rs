@@ -31,7 +31,6 @@ fn detect_node() -> Option<String> {
         .and_then(|out| {
             let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if out.status.success() && ver.starts_with('v') {
-                // Check major version >= 18
                 let major: u32 = ver.trim_start_matches('v')
                     .split('.')
                     .next()
@@ -48,7 +47,6 @@ fn detect_node() -> Option<String> {
         })
 }
 
-/// Detect platform for install instructions
 fn detect_platform() -> &'static str {
     #[cfg(target_os = "macos")]
     { "macos" }
@@ -60,22 +58,45 @@ fn detect_platform() -> &'static str {
     { "unknown" }
 }
 
-fn start_server() -> Result<Child, String> {
-    let server_path = std::env::current_dir()
-        .map_err(|e| format!("Failed to get cwd: {}", e))?
-        .join("src/server.js");
+fn find_server_js(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    // Try bundled resource path first (installed app)
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let bundled = resource_dir.join("server").join("src").join("server.js");
+        if bundled.exists() {
+            return Some(bundled);
+        }
+    }
 
-    // If we have a bundled server, use it; otherwise try the clawbox npm package
-    let (cmd, args, work_dir) = if server_path.exists() {
-        ("node".to_string(), vec![server_path.to_string_lossy().to_string()], 
-         server_path.parent().unwrap().parent().unwrap().to_path_buf())
-    } else {
-        // Fallback: use npx clawbox
-        ("npx".to_string(), vec!["clawbox".to_string()], std::env::current_dir().unwrap())
-    };
+    // Try relative to current dir (development mode)
+    if let Ok(cwd) = std::env::current_dir() {
+        // src-tauri/target/release/ -> project root
+        let dev_path = cwd.join("src").join("server.js");
+        if dev_path.exists() {
+            return Some(dev_path);
+        }
+        // src-tauri/ -> project root
+        let dev_path2 = cwd.join("..").join("src").join("server.js");
+        if dev_path2.exists() {
+            return Some(dev_path2.canonicalize().unwrap_or(dev_path2));
+        }
+    }
 
-    let child = Command::new(&cmd)
-        .args(&args)
+    None
+}
+
+fn start_server(app: &tauri::AppHandle) -> Result<Child, String> {
+    let server_path = find_server_js(app)
+        .ok_or_else(|| "Could not find server.js. Make sure the app is installed correctly.".to_string())?;
+
+    let work_dir = server_path
+        .parent()                       // server/src/
+        .and_then(|p| p.parent())       // server/
+        .and_then(|p| p.parent())       // resource_dir/ or project root
+        .ok_or("Failed to determine working directory")?
+        .to_path_buf();
+
+    let child = Command::new("node")
+        .arg(&server_path)
         .current_dir(&work_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -123,10 +144,7 @@ fn setup_page_html(platform: &str) -> String {
         ),
     };
 
-    let clawhub_cmd = match platform {
-        "windows" => "npm install -g clawhub",
-        _ => "npm install -g clawhub",
-    };
+    let clawhub_cmd = "npm install -g clawhub";
 
     format!(r#"<!DOCTYPE html>
 <html lang="zh-CN">
@@ -331,7 +349,7 @@ fn main() {
             match detect_node() {
                 Some(version) => {
                     println!("Node.js detected: {}", version);
-                    match start_server() {
+                    match start_server(app.handle()) {
                         Ok(child) => {
                             app.manage(Mutex::new(AppState {
                                 server_process: Some(child),
@@ -346,6 +364,12 @@ fn main() {
                         }
                         Err(e) => {
                             eprintln!("Failed to start server: {}", e);
+                            let platform = detect_platform();
+                            let html = setup_page_html(platform);
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.set_title("ClawBox — Error");
+                                let _ = window.eval(&format!("document.open(); document.write({}); document.close();", serde_json::to_string(&html).unwrap()));
+                            }
                         }
                     }
                 }

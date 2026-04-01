@@ -1540,7 +1540,7 @@ rm -f "${scriptPath}"
 
   // 启动服务器
   return new Promise((resolve) => {
-    const server = app.listen(port, '0.0.0.0', () => {
+    const server = app.listen(port, '127.0.0.1', () => {
       const url = `http://127.0.0.1:${port}`;
       console.log(`\n  📦 ClawBox 已启动: ${url}`);
       console.log(`  在浏览器中打开即可开始配置\n`);

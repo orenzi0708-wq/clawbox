@@ -1369,13 +1369,16 @@ body::before {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border: 1px solid rgba(145, 184, 238, 0.12);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.03);
-  font-size: 15px;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
   cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
   transition: all 0.15s ease;
 }
 

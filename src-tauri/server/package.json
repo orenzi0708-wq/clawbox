@@ -1,0 +1,27 @@
+{
+  "name": "clawbox",
+  "version": "0.5.0",
+  "description": "ClawBox - 一键部署和管理 OpenClaw 的图形化工具",
+  "main": "src/server.js",
+  "bin": {
+    "clawbox": "./bin/clawbox.js"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js --dev"
+  },
+  "pkg": {
+    "scripts": [
+      "src/**/*.js"
+    ],
+    "assets": [
+      "public/**/*"
+    ]
+  },
+  "keywords": ["openclaw", "ai-assistant", "deploy", "gui"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

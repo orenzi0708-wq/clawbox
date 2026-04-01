@@ -173,7 +173,9 @@ const CHANNEL_UI_CATALOG = {
   dingtalk: { key: 'dingtalk', name: '钉钉', description: '钉钉消息通道' },
   qq: { key: 'qq', name: 'QQ', description: 'QQ 消息通道' },
   yuanbao: { key: 'yuanbao', name: '元宝', description: '元宝消息通道' },
-  feishu: { key: 'feishu', name: '飞书', description: '飞书消息通道' }
+  feishu: { key: 'feishu', name: '飞书', description: '飞书消息通道' },
+  telegram: { key: 'telegram', name: 'Telegram', description: 'Telegram 消息通道' },
+  discord: { key: 'discord', name: 'Discord', description: 'Discord 消息通道' }
 };
 let availableChannels = [];
 let connectedChannels = [];

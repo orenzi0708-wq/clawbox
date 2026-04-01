@@ -495,6 +495,38 @@ const CHANNEL_CATALOG = {
     settings: [
       { key: 'streaming', label: '启用 Streaming 模式（实时回复）', type: 'boolean', defaultValue: true }
     ]
+  },
+  telegram: {
+    key: 'telegram',
+    name: 'Telegram',
+    description: '通过 Bot Token 连接 Telegram Bot。',
+    quickConfigEnabled: false,
+    detailPath: '/channel-docs.html#telegram',
+    defaultSetupMode: 'manual',
+    setupModes: ['manual'],
+    footerNote: '填写 Telegram Bot Token 后保存即可启用。需要先在 @BotFather 创建 Bot 获取 Token。',
+    credentials: [
+      { key: 'botToken', label: 'Bot Token', placeholder: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11', required: true, secret: true }
+    ],
+    settings: [
+      { key: 'allowedUsers', label: '允许的用户 ID（选填，逗号分隔）', placeholder: '例如: 123456789,987654321', type: 'text', defaultValue: '' }
+    ]
+  },
+  discord: {
+    key: 'discord',
+    name: 'Discord',
+    description: '通过 Bot Token 连接 Discord Bot。',
+    quickConfigEnabled: false,
+    detailPath: '/channel-docs.html#discord',
+    defaultSetupMode: 'manual',
+    setupModes: ['manual'],
+    footerNote: '填写 Discord Bot Token 后保存即可启用。需要在 Discord Developer Portal 创建 Bot。',
+    credentials: [
+      { key: 'token', label: 'Bot Token', placeholder: '输入 Discord Bot Token', required: true, secret: true }
+    ],
+    settings: [
+      { key: 'guildIds', label: '允许的服务器 ID（选填，逗号分隔）', placeholder: '例如: 1234567890123456789', type: 'text', defaultValue: '' }
+    ]
   }
 };
 

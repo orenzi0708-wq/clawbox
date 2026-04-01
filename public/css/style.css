@@ -494,11 +494,11 @@ body::before {
 
 .channel-config-card,
 .channel-connected-card {
-  border: 1px solid rgba(145, 184, 238, 0.14);
+  border: 1px solid var(--border);
   border-radius: 18px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 28%),
-    rgba(10, 18, 30, 0.9);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 24%),
+    var(--surface-strong);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
@@ -534,7 +534,6 @@ body::before {
 
 .channel-connected-card {
   padding: 20px 20px 18px;
-  border: none;
 }
 
 .channel-config-head,

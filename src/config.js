@@ -506,11 +506,9 @@ const CHANNEL_CATALOG = {
     setupModes: ['manual'],
     footerNote: '填写 Telegram Bot Token 后保存即可启用。需要先在 @BotFather 创建 Bot 获取 Token。',
     credentials: [
-      { key: 'botToken', label: 'Bot Token', placeholder: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11', required: true, secret: true }
+      { key: 'botToken', label: 'Bot Token', placeholder: '输入 Telegram Bot Token', required: true, secret: true }
     ],
-    settings: [
-      { key: 'allowedUsers', label: '允许的用户 ID（选填，逗号分隔）', placeholder: '例如: 123456789,987654321', type: 'text', defaultValue: '' }
-    ]
+    settings: []
   },
   discord: {
     key: 'discord',
@@ -524,9 +522,7 @@ const CHANNEL_CATALOG = {
     credentials: [
       { key: 'token', label: 'Bot Token', placeholder: '输入 Discord Bot Token', required: true, secret: true }
     ],
-    settings: [
-      { key: 'guildIds', label: '允许的服务器 ID（选填，逗号分隔）', placeholder: '例如: 1234567890123456789', type: 'text', defaultValue: '' }
-    ]
+    settings: []
   }
 };
 

@@ -528,8 +528,8 @@ async function applySwitchModel(provider) {
     if (!data.success) {
       throw new Error(data.error || '切换失败');
     }
-    // 成功后刷新页面
-    window.location.reload();
+    // 成功后局部刷新模型列表
+    loadModels();
   } catch (err) {
     alert('切换失败: ' + err.message);
   }

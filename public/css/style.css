@@ -2186,7 +2186,6 @@ body::before {
     grid-template-columns: 1fr;
   }
 
-  .channel-connected-header,
   .channel-connected-header-right,
   .channel-summary-row {
     flex-direction: column;

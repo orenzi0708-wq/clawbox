@@ -78,6 +78,8 @@ jobs:
       - name: Build macOS/Windows
         if: runner.os != 'Linux'
         shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
         run: |
           mkdir -p src-tauri/server/src src-tauri/server/public src-tauri/server/node_modules
           cp src/server.js src-tauri/server/src/

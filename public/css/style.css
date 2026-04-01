@@ -842,13 +842,16 @@ body::before {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
   color: var(--text-muted);
   cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
 }
 
 .channel-delete-icon:hover {
@@ -2186,7 +2189,6 @@ body::before {
     grid-template-columns: 1fr;
   }
 
-  .channel-connected-header-right,
   .channel-summary-row {
     flex-direction: column;
     align-items: flex-start;

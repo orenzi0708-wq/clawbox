@@ -60,12 +60,11 @@ jobs:
       - name: Install dependencies & prepare resources
         shell: bash
         run: |
-          npm install --ignore-scripts
-          mkdir -p src-tauri/server/src src-tauri/server/public
+          mkdir -p src-tauri/server/src src-tauri/server/public src-tauri/server/node_modules
           cp src/server.js src-tauri/server/src/
           cp -r public/* src-tauri/server/public/
           cp package.json src-tauri/server/
-          cp -r node_modules src-tauri/server/
+          cd src-tauri/server && npm install --production --ignore-scripts
 
       - name: Install Tauri CLI
         shell: bash

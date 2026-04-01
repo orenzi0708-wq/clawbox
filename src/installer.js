@@ -477,38 +477,60 @@ async function installOpenClaw(onProgress) {
       });
     } else {
       // Linux/macOS: 使用 install.sh (bash)
-      const sudoPrefix = isRoot() ? '' : 'sudo ';
+      // macOS 不用 sudo（非交互模式下 sudo 要密码会挂），尝试直接用 npm
+      const isMac = PLATFORM === 'darwin';
       report('install_openclaw', 'running',
-        isRoot()
-          ? '正在通过官方脚本安装 OpenClaw（root 模式，无需密码）...'
-          : '正在通过官方脚本安装 OpenClaw（可能需要输入 sudo 密码）...');
+        isMac
+          ? '正在通过 npm 安装 OpenClaw...'
+          : isRoot()
+            ? '正在通过官方脚本安装 OpenClaw（root 模式，无需密码）...'
+            : '正在通过官方脚本安装 OpenClaw（可能需要输入 sudo 密码）...');
 
-      await new Promise((resolve, reject) => {
-        const scriptPath = path.join(os.tmpdir(), 'openclaw-install.sh');
-        const dlProc = exec(
-          `curl -fsSL --proto '=https' --tlsv1.2 -o "${scriptPath}" https://openclaw.ai/install.sh`,
-          { timeout: 60000, shell: '/bin/bash' }
-        );
-        dlProc.on('close', dlCode => {
-          if (dlCode !== 0) {
-            reject(new Error(`下载安装脚本失败，退出码: ${dlCode}`));
-            return;
-          }
-          const runCmd = `${sudoPrefix}bash "${scriptPath}" --no-onboard`;
-          const proc = exec(runCmd, { timeout: 300000, shell: '/bin/bash' });
+      if (isMac) {
+        // macOS: 直接 npm install -g，不需要 sudo
+        await new Promise((resolve, reject) => {
+          const proc = exec('npm install -g openclaw@latest', { timeout: 300000, shell: '/bin/bash' });
           let output = '';
           proc.stdout?.on('data', data => { output += data; });
           proc.stderr?.on('data', data => { output += data; });
           proc.on('close', code => {
-            try { fs.unlinkSync(scriptPath); } catch {}
             if (code === 0) {
               resolve();
             } else {
-              reject(new Error(`安装脚本退出码: ${code}\n${output.slice(-500)}`));
+              reject(new Error(`npm install 退出码: ${code}\n${output.slice(-500)}`));
             }
           });
         });
-      });
+      } else {
+        // Linux: 用官方安装脚本
+        const sudoPrefix = isRoot() ? '' : 'sudo ';
+        await new Promise((resolve, reject) => {
+          const scriptPath = path.join(os.tmpdir(), 'openclaw-install.sh');
+          const dlProc = exec(
+            `curl -fsSL --proto '=https' --tlsv1.2 -o "${scriptPath}" https://openclaw.ai/install.sh`,
+            { timeout: 60000, shell: '/bin/bash' }
+          );
+          dlProc.on('close', dlCode => {
+            if (dlCode !== 0) {
+              reject(new Error(`下载安装脚本失败，退出码: ${dlCode}`));
+              return;
+            }
+            const runCmd = `${sudoPrefix}bash "${scriptPath}" --no-onboard`;
+            const proc = exec(runCmd, { timeout: 300000, shell: '/bin/bash' });
+            let output = '';
+            proc.stdout?.on('data', data => { output += data; });
+            proc.stderr?.on('data', data => { output += data; });
+            proc.on('close', code => {
+              try { fs.unlinkSync(scriptPath); } catch {}
+              if (code === 0) {
+                resolve();
+              } else {
+                reject(new Error(`安装脚本退出码: ${code}\n${output.slice(-500)}`));
+              }
+            });
+          });
+        });
+      }
     }
     report('install_openclaw', 'done', 'OpenClaw 安装完成 ✓');
 

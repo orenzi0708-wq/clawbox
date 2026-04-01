@@ -99,6 +99,25 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
           if-no-files-found: warn
 
+      - name: Create and upload source tarball (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          tar czf clawbox-source.tar.gz \
+            --exclude='src-tauri/target' \
+            --exclude='src-tauri/gen' \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --transform 's,^,clawbox/,' \
+            .
+        shell: bash
+
+      - name: Upload source tarball
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: clawbox-source
+          path: clawbox-source.tar.gz
+
       - name: Upload artifacts (macOS)
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4

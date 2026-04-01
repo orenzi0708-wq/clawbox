@@ -438,19 +438,19 @@ body::before {
 }
 
 .channel-console-kicker {
-  color: var(--text-muted);
+  color: var(--primary-warm);
 }
 
 .channel-console-card h2 {
   color: var(--text);
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
 }
 
 .channel-console-desc {
   margin-bottom: 28px;
-  color: var(--text-muted);
+  color: var(--text-soft);
 }
 
 .channel-console-card .form-group label,

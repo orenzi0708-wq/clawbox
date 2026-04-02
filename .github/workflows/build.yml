@@ -20,9 +20,6 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             name: macos-arm64
-          - os: macos-13
-            target: x86_64-apple-darwin
-            name: macos-x64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x64
@@ -150,4 +147,7 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
           if-no-files-found: warn
+# NOTE: macos-x64 (macos-13 Intel runner) is temporarily removed from main CI matrix.
+# Reason: GitHub runner cancels the job immediately before any steps start.
+# Re-enable after investigating Intel macOS runner availability/stability.
 # rebuild 1775062717

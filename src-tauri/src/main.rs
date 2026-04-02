@@ -138,18 +138,32 @@ fn download_node(app: &tauri::AppHandle) -> Result<String, String> {
 
     let archive_path = node_dir.join(if detect_platform() == "windows" { "node.zip" } else { "node.tar.gz" });
 
-    // Download with curl
-    let curl_cmd = format!(
-        "curl -fsSL --progress-bar -o \"{}\" \"{}\"",
-        archive_path.display(), url
-    );
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(&curl_cmd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .status()
-        .map_err(|e| format!("Failed to run curl: {}", e))?;
+    // Download archive
+    let status = if detect_platform() == "windows" {
+        let ps_cmd = format!(
+            "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri \"{}\" -OutFile \"{}\"",
+            url,
+            archive_path.display()
+        );
+        Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps_cmd])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .status()
+            .map_err(|e| format!("Failed to run PowerShell download: {}", e))?
+    } else {
+        let curl_cmd = format!(
+            "curl -fsSL --progress-bar -o \"{}\" \"{}\"",
+            archive_path.display(), url
+        );
+        Command::new("sh")
+            .arg("-c")
+            .arg(&curl_cmd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .status()
+            .map_err(|e| format!("Failed to run curl: {}", e))?
+    };
 
     if !status.success() {
         return Err("Failed to download Node.js".to_string());

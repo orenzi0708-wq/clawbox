@@ -69,6 +69,8 @@ jobs:
             # Prepare server resources
             mkdir -p src-tauri/server/src src-tauri/server/public src-tauri/server/node_modules
             cp src/server.js src-tauri/server/src/
+            cp src/config.js src-tauri/server/src/
+            cp src/installer.js src-tauri/server/src/
             cp -r public/. src-tauri/server/public/
             cp package.json src-tauri/server/
             cd src-tauri/server && npm install --omit=dev --ignore-scripts && cd ../..
@@ -85,6 +87,8 @@ jobs:
           set -e
           mkdir -p src-tauri/server/src src-tauri/server/public src-tauri/server/node_modules
           cp src/server.js src-tauri/server/src/
+          cp src/config.js src-tauri/server/src/
+          cp src/installer.js src-tauri/server/src/
           cp -r public/. src-tauri/server/public/
           cp package.json src-tauri/server/
           cd src-tauri/server && npm install --omit=dev --ignore-scripts && cd ../..

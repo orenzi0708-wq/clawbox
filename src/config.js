@@ -80,20 +80,25 @@ const DEFAULT_PROVIDER_CONFIG = {
     baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
     api: 'openai-completions',
     models: {
-      'hunyuan-turbos': { reasoning: false, contextWindow: 256000, maxTokens: 8192 },
       'hunyuan-t1': { reasoning: true, contextWindow: 256000, maxTokens: 8192 },
+      'hunyuan-t1-latest': { reasoning: true, contextWindow: 256000, maxTokens: 8192 },
+      'hunyuan-turbos': { reasoning: false, contextWindow: 256000, maxTokens: 8192 },
       'hunyuan-turbos-latest': { reasoning: false, contextWindow: 256000, maxTokens: 8192 },
-      'hunyuan-lite': { reasoning: false, contextWindow: 256000, maxTokens: 8192 }
+      'hunyuan-turbo-latest': { reasoning: false, contextWindow: 256000, maxTokens: 8192 },
+      'hunyuan-lite': { reasoning: false, contextWindow: 256000, maxTokens: 8192 },
+      'hunyuan-lite-latest': { reasoning: false, contextWindow: 256000, maxTokens: 8192 }
     }
   },
   qianwen: {
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     api: 'openai-completions',
     models: {
+      'qwen3-max': { reasoning: true, contextWindow: 262144, maxTokens: 32768 },
+      'qwen3.5-plus': { reasoning: true, contextWindow: 1000000, maxTokens: 65536 },
+      'qwen3.5-flash': { reasoning: false, contextWindow: 1000000, maxTokens: 32768 },
       'qwen-max-latest': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
       'qwen-plus-latest': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
       'qwen-turbo-latest': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
-      'qwen3.5-plus': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
       'qwen3-coder-plus': { reasoning: false, contextWindow: 128000, maxTokens: 8192 }
     }
   },
@@ -110,8 +115,8 @@ const DEFAULT_PROVIDER_CONFIG = {
     baseUrl: 'https://api.moonshot.cn/v1',
     api: 'openai-completions',
     models: {
-      'kimi-k2-thinking': { reasoning: true, contextWindow: 128000, maxTokens: 8192 },
-      'kimi-k2.5': { reasoning: true, contextWindow: 128000, maxTokens: 8192 },
+      'kimi-k2.5': { reasoning: true, contextWindow: 128000, maxTokens: 32768 },
+      'kimi-k2': { reasoning: true, contextWindow: 128000, maxTokens: 32768 },
       'moonshot-v1-128k': { reasoning: false, contextWindow: 128000, maxTokens: 8192 }
     }
   },
@@ -119,8 +124,8 @@ const DEFAULT_PROVIDER_CONFIG = {
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     api: 'openai-completions',
     models: {
-      'glm-5-turbo': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
       'glm-5': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
+      'glm-5-turbo': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
       'glm-4.7': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
       'glm-4.6': { reasoning: false, contextWindow: 128000, maxTokens: 8192 }
     }

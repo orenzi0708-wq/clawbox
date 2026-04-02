@@ -86,11 +86,12 @@ const MODEL_PROVIDER_CATALOG = {
   tencent_hunyuan: {
     label: '腾讯混元 Hunyuan',
     shortLabel: '混元',
-    description: '腾讯混元提供多尺寸中文大模型，支持对话、推理等场景。',
+    description: '腾讯混元提供中文对话与推理模型，本轮补上了最新常用版本，并把腾讯元 Token Plan / Coding Plan 场景一起标出来。',
     apiLink: 'https://console.cloud.tencent.com/hunyuan/start',
     models: [
-      { id: 'hunyuan-turbos-latest', name: 'Hunyuan Turbos Latest' },
+      { id: 'hunyuan-t1', name: 'Hunyuan T1（腾讯元 Token Plan / 腾讯元 Coding Plan）' },
       { id: 'hunyuan-t1-latest', name: 'Hunyuan T1 Latest' },
+      { id: 'hunyuan-turbos-latest', name: 'Hunyuan Turbos Latest' },
       { id: 'hunyuan-turbo-latest', name: 'Hunyuan Turbo Latest' },
       { id: 'hunyuan-lite-latest', name: 'Hunyuan Lite Latest' }
     ]
@@ -98,10 +99,12 @@ const MODEL_PROVIDER_CATALOG = {
   qianwen: {
     label: '阿里千问 Qwen',
     shortLabel: '千问',
-    description: '阿里千问提供高性能中文对话与代码模型，适合通用与开发场景。',
+    description: '阿里千问提供高性能中文对话与代码模型，已补进 Qwen3 系列最新主力版本。',
     apiLink: 'https://dashscope.console.aliyun.com/',
     models: [
+      { id: 'qwen3-max', name: 'Qwen 3 Max' },
       { id: 'qwen3.5-plus', name: 'Qwen 3.5 Plus' },
+      { id: 'qwen3.5-flash', name: 'Qwen 3.5 Flash' },
       { id: 'qwen-max-latest', name: 'Qwen Max Latest' },
       { id: 'qwen-plus-latest', name: 'Qwen Plus Latest' },
       { id: 'qwen-turbo-latest', name: 'Qwen Turbo Latest' },
@@ -111,58 +114,58 @@ const MODEL_PROVIDER_CATALOG = {
   minimax: {
     label: 'MiniMax',
     shortLabel: 'MiniMax',
-    description: 'MiniMax 提供高性价比的对话与多模态模型，适合大规模应用。',
+    description: 'MiniMax 提供高性价比对话模型，本轮顺手补了 MiniMax Token Plan（国内）展示，并修正了前后端 model id 对不上的坑。',
     apiLink: 'https://api.minimax.chat/',
     models: [
-      { id: 'minimax-m2-7', name: 'MiniMax M2.7' },
-      { id: 'minimax-m2-5', name: 'MiniMax M2.5' },
-      { id: 'minimax-m2-1', name: 'MiniMax M2.1' }
+      { id: 'MiniMax-M2.7', name: 'MiniMax M2.7（MiniMax Token Plan 国内）' },
+      { id: 'MiniMax-M2.5', name: 'MiniMax M2.5' },
+      { id: 'MiniMax-M2.1', name: 'MiniMax M2.1' }
     ]
   },
   moonshot: {
     label: 'Moonshot Kimi',
     shortLabel: 'Kimi',
-    description: 'Moonshot Kimi 提供长上下文推理模型，适合深度分析与复杂任务。',
+    description: 'Moonshot 官方当前主推 kimi-k2 / kimi-k2.5 与 moonshot-v1，本轮也把 Kimi Coding Plan 展示一起补上。',
     apiLink: 'https://platform.moonshot.cn/',
     models: [
-      { id: 'kimi-k2-thinking', name: 'Kimi K2 Thinking' },
-      { id: 'kimi-k2-5', name: 'Kimi K2.5' },
+      { id: 'kimi-k2.5', name: 'Kimi K2.5（Kimi Coding Plan）' },
+      { id: 'kimi-k2', name: 'Kimi K2' },
       { id: 'moonshot-v1-128k', name: 'Moonshot V1 128K' }
     ]
   },
   zhipu: {
     label: '智谱 GLM',
     shortLabel: '智谱',
-    description: '智谱 GLM 提供高性能中文通用模型，适合对话、推理与知识问答。',
+    description: '智谱 GLM 提供中文通用与推理模型，本轮把智谱 Coding Plan（国内）展示也一起补上，并修正了前后端 id。',
     apiLink: 'https://open.bigmodel.cn/',
     models: [
-      { id: 'glm-5-turbo', name: 'GLM-5-Turbo' },
-      { id: 'glm-5', name: 'GLM-5' },
-      { id: 'glm-4-7', name: 'GLM-4.7' },
-      { id: 'glm-4-6', name: 'GLM-4.6' }
+      { id: 'glm-5', name: 'GLM-5（智谱 Coding Plan 国内）' },
+      { id: 'glm-5-turbo', name: 'GLM-5 Turbo' },
+      { id: 'glm-4.7', name: 'GLM-4.7' },
+      { id: 'glm-4.6', name: 'GLM-4.6' }
     ]
   },
   doubao: {
     label: '火山引擎 豆包',
     shortLabel: '豆包',
-    description: '火山引擎豆包提供多尺寸对话模型，适合高并发与企业级应用。',
+    description: '火山方舟提供豆包及主流模型服务，本轮补了火山引擎方舟 Coding Plan 展示，并修正豆包 model id。',
     apiLink: 'https://console.volcengine.com/ark/region:ark+cn-beijing/overview',
     models: [
-      { id: 'doubao-seed-2-0-pro', name: '豆包 Seed 2.0 Pro' },
-      { id: 'doubao-seed-1-8', name: '豆包 Seed 1.8' },
-      { id: 'doubao-seed-1-6', name: '豆包 Seed 1.6' },
-      { id: 'doubao-seed-1-6-flash', name: '豆包 Seed 1.6 Flash' }
+      { id: 'doubao-seed-2.0-pro', name: '豆包 Seed 2.0 Pro（火山引擎方舟 Coding Plan）' },
+      { id: 'doubao-seed-1.8', name: '豆包 Seed 1.8' },
+      { id: 'doubao-seed-1.6-pro', name: '豆包 Seed 1.6 Pro' },
+      { id: 'doubao-seed-1.6', name: '豆包 Seed 1.6' }
     ]
   },
   ernie: {
     label: '百度文心 ERNIE',
     shortLabel: '文心',
-    description: '百度文心提供中文理解与生成模型，适合对话、创作与知识场景。',
+    description: '百度千帆模型列表里已补进文心主力版本，并把百度千帆 Coding Plan 展示一起补上，同时修正前后端 id。',
     apiLink: 'https://console.baidu.com/qianfan/modelcenter/model',
     models: [
-      { id: 'ernie-5-0', name: 'ERNIE 5.0' },
-      { id: 'ernie-x1-1', name: 'ERNIE X1.1' },
-      { id: 'ernie-4-5-turbo', name: 'ERNIE 4.5 Turbo' }
+      { id: 'ernie-5.0', name: 'ERNIE 5.0（百度千帆 Coding Plan）' },
+      { id: 'ernie-x1.1', name: 'ERNIE X1.1' },
+      { id: 'ernie-4.5-turbo', name: 'ERNIE 4.5 Turbo' }
     ]
   }
 };

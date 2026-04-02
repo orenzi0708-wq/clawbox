@@ -41,7 +41,7 @@ function ensureGlobalLink() {
 async function main() {
   console.log('');
   console.log('  ╔═══════════════════════════════════╗');
-  console.log('  ║       📦 ClawBox v0.5.0           ║');
+  console.log('  ║       📦 ClawBox v0.5.1           ║');
   console.log('  ║   一键部署 & 管理 OpenClaw         ║');
   console.log('  ╚═══════════════════════════════════╝');
   console.log('');

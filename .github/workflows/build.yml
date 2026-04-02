@@ -113,13 +113,16 @@ jobs:
       - name: Create and upload source tarball (Linux)
         if: runner.os == 'Linux'
         run: |
-          tar czf clawbox-source.tar.gz \
+          mkdir -p /tmp/clawbox-release
+          tar czf /tmp/clawbox-release/clawbox-source.tar.gz \
             --exclude='src-tauri/target' \
             --exclude='src-tauri/gen' \
             --exclude='.git' \
             --exclude='node_modules' \
+            --exclude='clawbox-source.tar.gz' \
             --transform 's,^,clawbox/,' \
             .
+          cp /tmp/clawbox-release/clawbox-source.tar.gz ./clawbox-source.tar.gz
         shell: bash
 
       - name: Upload source tarball

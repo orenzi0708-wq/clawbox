@@ -86,10 +86,10 @@ const MODEL_PROVIDER_CATALOG = {
   tencent_hunyuan: {
     label: '腾讯混元 Hunyuan',
     shortLabel: '混元',
-    description: '腾讯混元提供中文对话与推理模型，本轮补上了最新常用版本，并把腾讯元 Token Plan / Coding Plan 场景一起标出来。',
+    description: '这里只列 API 可接入的混元模型；腾讯元 Token Plan / Coding Plan 属于订阅方案信息，不再混进模型名。',
     apiLink: 'https://console.cloud.tencent.com/hunyuan/start',
     models: [
-      { id: 'hunyuan-t1', name: 'Hunyuan T1（腾讯元 Token Plan / 腾讯元 Coding Plan）' },
+      { id: 'hunyuan-t1', name: 'Hunyuan T1' },
       { id: 'hunyuan-t1-latest', name: 'Hunyuan T1 Latest' },
       { id: 'hunyuan-turbos-latest', name: 'Hunyuan Turbos Latest' },
       { id: 'hunyuan-turbo-latest', name: 'Hunyuan Turbo Latest' },
@@ -114,21 +114,26 @@ const MODEL_PROVIDER_CATALOG = {
   minimax: {
     label: 'MiniMax',
     shortLabel: 'MiniMax',
-    description: 'MiniMax 提供高性价比对话模型，本轮顺手补了 MiniMax Token Plan（国内）展示，并修正了前后端 model id 对不上的坑。',
-    apiLink: 'https://api.minimax.chat/',
+    description: 'MiniMax 这里按服务器当前真实格式走 Anthropiс 兼容接入：baseUrl 为 https://api.minimaxi.com/anthropic，api 为 anthropic-messages。',
+    apiLink: 'https://platform.minimaxi.com/',
     models: [
-      { id: 'MiniMax-M2.7', name: 'MiniMax M2.7（MiniMax Token Plan 国内）' },
+      { id: 'MiniMax-M2.7', name: 'MiniMax M2.7' },
+      { id: 'MiniMax-M2.7-HighSpeed', name: 'MiniMax M2.7 HighSpeed' },
       { id: 'MiniMax-M2.5', name: 'MiniMax M2.5' },
-      { id: 'MiniMax-M2.1', name: 'MiniMax M2.1' }
+      { id: 'MiniMax-M2.5-highspeed', name: 'MiniMax M2.5 Highspeed' },
+      { id: 'MiniMax-M2.5-Lightning', name: 'MiniMax M2.5 Lightning' },
+      { id: 'MiniMax-M2.1', name: 'MiniMax M2.1' },
+      { id: 'MiniMax-M2.1-lightning', name: 'MiniMax M2.1 Lightning' },
+      { id: 'MiniMax-M2', name: 'MiniMax M2' }
     ]
   },
   moonshot: {
     label: 'Moonshot Kimi',
     shortLabel: 'Kimi',
-    description: 'Moonshot 官方当前主推 kimi-k2 / kimi-k2.5 与 moonshot-v1，本轮也把 Kimi Coding Plan 展示一起补上。',
+    description: '这里只列 Moonshot API 可接入模型；Kimi Coding Plan 属于订阅方案信息，不再混进模型名。',
     apiLink: 'https://platform.moonshot.cn/',
     models: [
-      { id: 'kimi-k2.5', name: 'Kimi K2.5（Kimi Coding Plan）' },
+      { id: 'kimi-k2.5', name: 'Kimi K2.5' },
       { id: 'kimi-k2', name: 'Kimi K2' },
       { id: 'moonshot-v1-128k', name: 'Moonshot V1 128K' }
     ]
@@ -136,10 +141,11 @@ const MODEL_PROVIDER_CATALOG = {
   zhipu: {
     label: '智谱 GLM',
     shortLabel: '智谱',
-    description: '智谱 GLM 提供中文通用与推理模型，本轮把智谱 Coding Plan（国内）展示也一起补上，并修正了前后端 id。',
+    description: '这里只列智谱 API 可接入模型；GLM Coding Plan 属于订阅方案信息，不再混进模型名。已补上最新的 GLM-5.1。',
     apiLink: 'https://open.bigmodel.cn/',
     models: [
-      { id: 'glm-5', name: 'GLM-5（智谱 Coding Plan 国内）' },
+      { id: 'glm-5.1', name: 'GLM-5.1' },
+      { id: 'glm-5', name: 'GLM-5' },
       { id: 'glm-5-turbo', name: 'GLM-5 Turbo' },
       { id: 'glm-4.7', name: 'GLM-4.7' },
       { id: 'glm-4.6', name: 'GLM-4.6' }
@@ -148,10 +154,10 @@ const MODEL_PROVIDER_CATALOG = {
   doubao: {
     label: '火山引擎 豆包',
     shortLabel: '豆包',
-    description: '火山方舟提供豆包及主流模型服务，本轮补了火山引擎方舟 Coding Plan 展示，并修正豆包 model id。',
+    description: '这里只列火山方舟 API 可接入模型；方舟 Coding Plan 属于订阅方案信息，不再混进模型名。',
     apiLink: 'https://console.volcengine.com/ark/region:ark+cn-beijing/overview',
     models: [
-      { id: 'doubao-seed-2.0-pro', name: '豆包 Seed 2.0 Pro（火山引擎方舟 Coding Plan）' },
+      { id: 'doubao-seed-2.0-pro', name: '豆包 Seed 2.0 Pro' },
       { id: 'doubao-seed-1.8', name: '豆包 Seed 1.8' },
       { id: 'doubao-seed-1.6-pro', name: '豆包 Seed 1.6 Pro' },
       { id: 'doubao-seed-1.6', name: '豆包 Seed 1.6' }
@@ -160,10 +166,10 @@ const MODEL_PROVIDER_CATALOG = {
   ernie: {
     label: '百度文心 ERNIE',
     shortLabel: '文心',
-    description: '百度千帆模型列表里已补进文心主力版本，并把百度千帆 Coding Plan 展示一起补上，同时修正前后端 id。',
+    description: '这里只列百度千帆 API 可接入模型；百度千帆 Coding Plan 属于订阅方案信息，不再混进模型名。',
     apiLink: 'https://console.baidu.com/qianfan/modelcenter/model',
     models: [
-      { id: 'ernie-5.0', name: 'ERNIE 5.0（百度千帆 Coding Plan）' },
+      { id: 'ernie-5.0', name: 'ERNIE 5.0' },
       { id: 'ernie-x1.1', name: 'ERNIE X1.1' },
       { id: 'ernie-4.5-turbo', name: 'ERNIE 4.5 Turbo' }
     ]

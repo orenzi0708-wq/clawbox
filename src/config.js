@@ -103,12 +103,17 @@ const DEFAULT_PROVIDER_CONFIG = {
     }
   },
   minimax: {
-    baseUrl: 'https://api.minimax.chat/v1',
-    api: 'openai-completions',
+    baseUrl: 'https://api.minimaxi.com/anthropic',
+    api: 'anthropic-messages',
     models: {
       'MiniMax-M2.7': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
+      'MiniMax-M2.7-HighSpeed': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
       'MiniMax-M2.5': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
-      'MiniMax-M2.1': { reasoning: false, contextWindow: 128000, maxTokens: 8192 }
+      'MiniMax-M2.5-highspeed': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
+      'MiniMax-M2.5-Lightning': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
+      'MiniMax-M2.1': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
+      'MiniMax-M2.1-lightning': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
+      'MiniMax-M2': { reasoning: false, contextWindow: 128000, maxTokens: 8192 }
     }
   },
   moonshot: {
@@ -124,6 +129,7 @@ const DEFAULT_PROVIDER_CONFIG = {
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     api: 'openai-completions',
     models: {
+      'glm-5.1': { reasoning: true, contextWindow: 128000, maxTokens: 8192 },
       'glm-5': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
       'glm-5-turbo': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },
       'glm-4.7': { reasoning: false, contextWindow: 128000, maxTokens: 8192 },

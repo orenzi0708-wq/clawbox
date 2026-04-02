@@ -353,8 +353,11 @@ function startServer(port = 3456, devMode = false) {
     return new Promise((resolve) => {
       let reqUrl, reqBody, reqHeaders;
 
-      if (provider === 'anthropic') {
-        reqUrl = 'https://api.anthropic.com/v1/messages';
+      if (provider === 'anthropic' || provider === 'minimax') {
+        const cleanBaseUrl = (baseUrl || '').replace(/\/+$/, '') || (provider === 'minimax'
+          ? 'https://api.minimaxi.com/anthropic'
+          : 'https://api.anthropic.com');
+        reqUrl = cleanBaseUrl + '/v1/messages';
         reqBody = JSON.stringify({
           model: model,
           max_tokens: 1,
@@ -1540,8 +1543,9 @@ rm -f "${scriptPath}"
 
   // 启动服务器
   return new Promise((resolve) => {
-    const server = app.listen(port, '127.0.0.1', () => {
-      const url = `http://127.0.0.1:${port}`;
+    const host = process.env.HOST || '127.0.0.1';
+    const server = app.listen(port, host, () => {
+      const url = `http://${host}:${port}`;
       console.log(`\n  📦 ClawBox 已启动: ${url}`);
       console.log(`  在浏览器中打开即可开始配置\n`);
 

@@ -3,6 +3,12 @@
 // ========== 初始化 ==========
 
 let currentModelConfig = null;
+let latestToolStatus = null;
+let lastSuccessfulDashboardUrl = '';
+let lastSuccessfulDashboardAt = 0;
+let suspendHeavyPollingUntil = 0;
+let fullStatusProbePromise = null;
+let fullStatusProbeTimer = null;
 const MODEL_PROVIDER_CATALOG = {
   deepseek: {
     label: '深度求索 DeepSeek',
@@ -192,6 +198,10 @@ let currentChannelKey = 'wecom';
 let expandedConnectedChannels = new Set();
 let activeQuickConfigSessionId = '';
 let quickConfigPollTimer = null;
+let clawhubReady = false;
+let clawhubBootstrapPollTimer = null;
+let skillSearchInFlight = null;
+const skillSearchCache = new Map();
 const CHANNEL_STATUS_TEXT = {
   unconfigured: '未配置',
   configured: '已配置未启用',
@@ -201,6 +211,81 @@ const CHANNEL_STATUS_TEXT = {
   connected: '已接入',
   failed: '配置失败'
 };
+
+
+function getOpenClawLifecycleTone(lifecycle) {
+  const stage = lifecycle?.stage || '';
+  if (stage === 'ready' || stage === 'installed_ready' || stage === 'gateway_degraded') return 'ok';
+  if (stage === 'init_incomplete' || stage === 'gateway_incomplete' || stage === 'gateway_unhealthy' || stage === 'gateway_starting') return 'warn';
+  return 'err';
+}
+
+function formatGatewayLifecycleText(lifecycle, gatewayRunning) {
+  if (!lifecycle?.installed) return gatewayRunning ? '● 运行中' : '○ 未运行';
+  if (gatewayRunning) return lifecycle?.detail ? `● 运行中；${lifecycle.detail}` : '● 运行中';
+
+  if (lifecycle?.stage === 'gateway_degraded') {
+    return lifecycle?.detail ? `◐ 可用但待同步；${lifecycle.detail}` : '◐ 可用但待同步';
+  }
+
+  if (lifecycle?.stage === 'gateway_unhealthy') {
+    return lifecycle?.detail ? `○ 异常；${lifecycle.detail}` : '○ 异常；Gateway 端口已监听但 RPC 未就绪';
+  }
+
+  if (lifecycle?.stage === 'gateway_starting') {
+    return lifecycle?.detail ? `● 启动中；${lifecycle.detail}` : '● 启动中；Gateway 正在恢复';
+  }
+
+  if (lifecycle?.stage === 'gateway_incomplete') {
+    if (lifecycle.gatewayFailure === 'permission') return '○ 未运行；Gateway 服务注册需要管理员权限';
+    if (lifecycle.gatewayFailure === 'timeout') return '○ 未运行；Gateway 重启超时，后台服务未完全就绪';
+    return lifecycle?.detail ? `○ 未运行；${lifecycle.detail}` : '○ 未运行；Gateway 尚未完成';
+  }
+
+  if (lifecycle?.stage === 'init_incomplete') {
+    return lifecycle?.detail ? `○ 未运行；${lifecycle.detail}` : '○ 未运行；初始化未完成';
+  }
+
+  return lifecycle?.detail ? `○ 未运行；${lifecycle.detail}` : '○ 未运行';
+}
+
+function formatOpenClawLifecycleText(lifecycle, fallbackVersion, fallbackPath) {
+  if (!lifecycle?.installed) return '✗ 未安装';
+  const versionText = lifecycle.version || fallbackVersion || '已安装';
+  const pathText = lifecycle.path || fallbackPath;
+  const suffix = pathText ? ` (${pathText})` : '';
+  const detail = lifecycle.detail ? `；${lifecycle.detail}` : '';
+  return `✓ ${versionText}${suffix}${detail}`;
+}
+
+function shouldShowOpenClawPostInstallActions(lifecycle) {
+  if (!lifecycle?.installed) return false;
+  return !['init_incomplete', 'gateway_incomplete', 'gateway_starting'].includes(String(lifecycle.stage || ''));
+}
+
+function resetInstallButtonState(force = false) {
+  const btn = document.getElementById('btnInstall');
+  if (!btn || (!force && installActionInFlight)) return;
+  btn.textContent = '一键安装';
+  btn.disabled = false;
+  btn.style.background = '';
+}
+
+function resetUpdateButtonState(force = false) {
+  const btn = document.getElementById('btnUpdate');
+  if (!btn || (!force && updateActionInFlight)) return;
+  btn.textContent = '检查更新';
+  btn.disabled = false;
+  btn.style.background = '';
+}
+
+function resetUninstallButtonState(force = false) {
+  const btn = document.getElementById('btnUninstall');
+  if (!btn || (!force && uninstallActionInFlight)) return;
+  btn.textContent = '卸载';
+  btn.disabled = false;
+  btn.style.background = '';
+}
 
 function buildQrImageUrl(content) {
   if (!content) return '';
@@ -222,6 +307,198 @@ function truncateMiddle(text, maxLength = 80) {
   return `${value.slice(0, head)}...${value.slice(-tail)}`;
 }
 
+function upsertInstallHint(id, badgeText, text, extraClass = '') {
+  const installInfo = document.getElementById('installInfo');
+  if (!installInfo) return;
+
+  let item = document.getElementById(id);
+  if (!item) {
+    item = document.createElement('div');
+    item.id = id;
+    item.className = 'info-item';
+    item.innerHTML = '<span class="info-badge"></span><span class="info-text"></span>';
+    installInfo.appendChild(item);
+  }
+
+  item.className = `info-item ${extraClass}`.trim();
+  item.style.display = 'flex';
+  item.querySelector('.info-badge').textContent = badgeText;
+  item.querySelector('.info-text').textContent = text;
+}
+
+function consumeSseChunk(state, chunkText) {
+  state.buffer = `${state.buffer || ''}${chunkText || ''}`;
+  const events = [];
+
+  while (true) {
+    const separatorIndex = state.buffer.indexOf('\n\n');
+    if (separatorIndex === -1) break;
+
+    const rawEvent = state.buffer.slice(0, separatorIndex);
+    state.buffer = state.buffer.slice(separatorIndex + 2);
+
+    const payload = rawEvent
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.replace(/^data:\s?/, ''))
+      .join('\n')
+      .trim();
+
+    if (!payload) continue;
+
+    try {
+      events.push(JSON.parse(payload));
+    } catch (error) {
+      console.warn('SSE JSON parse skipped:', error.message, payload);
+    }
+  }
+
+  return events;
+}
+
+async function readSseJsonStream(response, onEvent) {
+  const reader = response.body?.getReader?.();
+  if (!reader) throw new Error('浏览器不支持流式读取');
+
+  const decoder = new TextDecoder();
+  const streamState = { buffer: '' };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    const chunkText = decoder.decode(value || new Uint8Array(), { stream: !done });
+    const events = consumeSseChunk(streamState, chunkText);
+    for (const event of events) {
+      await onEvent(event);
+    }
+    if (done) {
+      const tailEvents = consumeSseChunk(streamState, '\n\n');
+      for (const event of tailEvents) {
+        await onEvent(event);
+      }
+      break;
+    }
+  }
+}
+
+function setButtonBusy(button, busyText, idleText = '') {
+  if (!button) return () => {};
+  const previousText = idleText || button.dataset.idleText || button.textContent;
+  button.dataset.idleText = previousText;
+  const previousDisabled = button.disabled;
+  button.disabled = true;
+  if (busyText) button.textContent = busyText;
+
+  return () => {
+    button.disabled = previousDisabled;
+    button.textContent = button.dataset.idleText || previousText;
+  };
+}
+
+function getNodeUninstallConfirmMessage(toolStatus) {
+  const node = toolStatus?.node;
+  const runtimeNode = toolStatus?.runtimeNode;
+  const status = node?.uninstallStatus || (node?.installed ? 'removable' : (runtimeNode?.installed ? 'runtime_only' : 'absent'));
+
+  if (status === 'runtime_in_use') {
+    return '当前 ClawBox 正在使用这个系统 Node.js 运行，不能在当前会话内自动卸载。请改为系统手动卸载，或切换到独立运行时后再试。';
+  }
+
+  if (status === 'system_managed') {
+    return '当前检测到系统级 Node.js。为避免官方卸载器打断服务，本轮仅建议从系统“已安装的应用”或管理员 PowerShell 手动卸载。';
+  }
+
+  if (status === 'runtime_only') {
+    return node?.uninstallHint || '当前 ClawBox 使用独立运行时，未检测到可单独管理的系统 Node.js。';
+  }
+
+  if (status === 'runtime_not_isolated') {
+    return node?.uninstallHint || '当前运行时尚未证明与系统 Node.js 隔离，已禁用自动卸载。';
+  }
+
+  if (status === 'absent' || !node?.installed) {
+    return '未检测到可卸载的系统 Node.js。';
+  }
+
+  if (runtimeNode?.installed) {
+    return '确定要卸载系统 Node.js 吗？当前 ClawBox 仍由独立运行时提供服务，但依赖系统 Node.js 的 OpenClaw / npm / clawhub 功能可能受影响。';
+  }
+
+  return '确定要卸载 Node.js 吗？卸载后依赖该 Node.js 的 ClawBox 和 OpenClaw 功能都将无法运行。';
+}
+
+function getNodeUninstallButtonTitle(toolStatus) {
+  const node = toolStatus?.node;
+  const runtimeNode = toolStatus?.runtimeNode;
+  const status = node?.uninstallStatus || (node?.installed ? 'removable' : (runtimeNode?.installed ? 'runtime_only' : 'absent'));
+
+  if (status === 'removable') return '';
+  if (node?.uninstallHint) return node.uninstallHint;
+  if (status === 'runtime_only') return '当前 ClawBox 使用独立运行时，未检测到可卸载的系统 Node.js';
+  if (status === 'runtime_not_isolated') return '当前运行时尚未证明与系统 Node.js 隔离，已禁用自动卸载';
+  if (status === 'runtime_in_use') return '当前 ClawBox 正在使用这个系统 Node.js 运行，当前会话内不可自动卸载';
+  if (status === 'system_managed') return '当前检测到系统级 Node.js，本轮仅支持手动卸载';
+  return '未检测到可卸载的系统 Node.js';
+}
+
+function formatClawHubError(error) {
+  const text = String(error || '').trim();
+  if (!text) return '未知错误';
+  return text.length > 180 ? `${text.slice(0, 180)}...` : text;
+}
+
+function renderClawHubBootstrapHint(bootstrap) {
+  if (!bootstrap) return;
+
+  if (bootstrap.status === 'running') {
+    upsertInstallHint('clawhubBootstrapHint', '🧩 ClawHub', bootstrap.detail || '首次启动，正在自动准备 ClawHub CLI...');
+    return;
+  }
+
+  if (bootstrap.status === 'error') {
+    upsertInstallHint('clawhubBootstrapHint', '⚠️ ClawHub', bootstrap.error ? `自动准备失败：${bootstrap.error}` : '自动准备失败，请在工具页检查');
+    return;
+  }
+
+  if (bootstrap.installed) {
+    upsertInstallHint('clawhubBootstrapHint', '✅ ClawHub', bootstrap.autoInstalled ? '首次启动已自动准备好 ClawHub CLI' : 'ClawHub CLI 已就绪');
+  }
+}
+
+function scheduleClawHubBootstrapPoll(bootstrap) {
+  if (clawhubBootstrapPollTimer) {
+    clearTimeout(clawhubBootstrapPollTimer);
+    clawhubBootstrapPollTimer = null;
+  }
+
+  if (bootstrap?.status === 'running') {
+    clawhubBootstrapPollTimer = setTimeout(() => {
+      refreshInstallLifecycleState();
+    }, 3000);
+  }
+}
+
+function getStepLabel(name) {
+  const labels = {
+    detect_os: '检测系统',
+    check_prereq: '检查前置',
+    install_openclaw: '安装 OpenClaw',
+    install_openclaw_stage: '安装阶段',
+    install_openclaw_stream: '安装输出',
+    install_clawhub: '安装 ClawHub CLI',
+    init_config: '初始化配置',
+    install_gateway: '注册 Gateway',
+    verify: '验证结果',
+    all_done: '流程完成',
+    stop_gateway: '停止 Gateway',
+    uninstall: '执行卸载',
+    fallback_remove: '清理残留',
+    clean_runtime: '清理运行时',
+    final_check: '最终复检',
+    error: '错误'
+  };
+  return labels[name] || name;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   initTabs();
   loadStatus();
@@ -229,10 +506,12 @@ document.addEventListener('DOMContentLoaded', () => {
   loadModels();
   loadChannelsView();
   loadInstalledSkills();
+  startInstallLifecyclePolling();
+  startToolStatusPolling();
 
   // 点击 Skills 标签时检查 clawhub
   document.querySelector('[data-tab="skills"]')?.addEventListener('click', () => {
-    if (!clawhubReady) checkClawHub();
+    if (!clawhubReady) refreshClawHubAvailability(true);
   });
 
   // 点击工具标签时加载状态
@@ -270,45 +549,216 @@ function initTabs() {
 
 // ========== 状态加载 ==========
 
-async function loadStatus() {
+function applyStatusPayload(data) {
+  document.getElementById('osInfo').textContent = data.os;
+  document.getElementById('nodeInfo').textContent = data.nodeOk
+    ? `✓ ${data.nodeVersion}`
+    : `✗ ${data.nodeVersion}`;
+  document.getElementById('nodeInfo').className = `value ${data.nodeOk ? 'ok' : 'err'}`;
+
+  const lifecycle = data.openclawLifecycle || null;
+  if (data.openclawInstalled) {
+    const showPostInstallActions = shouldShowOpenClawPostInstallActions(lifecycle);
+    resetUpdateButtonState();
+    resetUninstallButtonState();
+    document.getElementById('openclawInfo').textContent = formatOpenClawLifecycleText(lifecycle, data.openclawVersion, data.openclawPath);
+    document.getElementById('openclawInfo').className = `value ${getOpenClawLifecycleTone(lifecycle)}`;
+    document.getElementById('btnInstall').style.display = showPostInstallActions ? 'none' : 'inline-block';
+    document.getElementById('btnUpdate').style.display = showPostInstallActions ? 'inline-block' : 'none';
+    document.getElementById('btnUninstall').style.display = showPostInstallActions ? 'inline-block' : 'none';
+  } else {
+    resetInstallButtonState();
+    resetUpdateButtonState();
+    resetUninstallButtonState();
+    document.getElementById('openclawInfo').textContent = '✗ 未安装';
+    document.getElementById('openclawInfo').className = 'value err';
+    document.getElementById('btnInstall').style.display = 'inline-block';
+    document.getElementById('btnUpdate').style.display = 'none';
+    document.getElementById('btnUninstall').style.display = 'none';
+  }
+
+  document.getElementById('gatewayInfo').textContent = formatGatewayLifecycleText(lifecycle, data.gatewayRunning);
+  document.getElementById('gatewayInfo').className = `value ${data.gatewayRunning ? 'ok' : (lifecycle?.installed ? getOpenClawLifecycleTone(lifecycle) : 'warn')}`;
+
+  if (data.isRoot) {
+    document.getElementById('rootHint').style.display = 'flex';
+    document.getElementById('sudoHint').style.display = 'none';
+  } else {
+    document.getElementById('rootHint').style.display = 'none';
+    document.getElementById('sudoHint').style.display = 'flex';
+  }
+
+  renderClawHubBootstrapHint(data.clawhubBootstrap);
+  scheduleClawHubBootstrapPoll(data.clawhubBootstrap);
+  return data;
+}
+
+function shouldScheduleFullStatusProbe(data, options = {}) {
+  if (options.fromFullProbe) return false;
+  const lifecycle = data?.openclawLifecycle || null;
+  if (!data?.openclawInstalled || !lifecycle?.configReady) return false;
+  return lifecycle.stage === 'gateway_incomplete' || lifecycle.stage === 'gateway_starting';
+}
+
+function scheduleFullStatusProbe(delayMs = 0) {
+  if (fullStatusProbePromise || fullStatusProbeTimer) return;
+  fullStatusProbeTimer = setTimeout(() => {
+    fullStatusProbeTimer = null;
+    loadFullStatus().catch(() => {});
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
+async function loadStatus(options = {}) {
+  const endpoint = options.full ? '/api/status' : '/api/status-lite';
   try {
-    const res = await fetch('/api/status');
+    const res = await fetch(endpoint);
     const data = await res.json();
-
-    document.getElementById('osInfo').textContent = data.os;
-    document.getElementById('nodeInfo').textContent = data.nodeOk
-      ? `✓ ${data.nodeVersion}`
-      : `✗ ${data.nodeVersion}`;
-    document.getElementById('nodeInfo').className = `value ${data.nodeOk ? 'ok' : 'err'}`;
-
-    if (data.openclawInstalled) {
-      document.getElementById('openclawInfo').textContent = `✓ ${data.openclawVersion || '已安装'}`;
-      document.getElementById('openclawInfo').className = 'value ok';
-      document.getElementById('btnInstall').style.display = 'none';
-      document.getElementById('btnUpdate').style.display = 'inline-block';
-      document.getElementById('btnUninstall').style.display = 'inline-block';
-    } else {
-      document.getElementById('openclawInfo').textContent = '✗ 未安装';
-      document.getElementById('openclawInfo').className = 'value err';
-      document.getElementById('btnInstall').style.display = 'inline-block';
-      document.getElementById('btnUpdate').style.display = 'none';
-      document.getElementById('btnUninstall').style.display = 'none';
+    applyStatusPayload(data);
+    if (shouldScheduleFullStatusProbe(data, options)) {
+      scheduleFullStatusProbe(50);
     }
-
-    document.getElementById('gatewayInfo').textContent = data.gatewayRunning ? '● 运行中' : '○ 未运行';
-    document.getElementById('gatewayInfo').className = `value ${data.gatewayRunning ? 'ok' : 'warn'}`;
-
-    // Root 提示
-    if (data.isRoot) {
-      document.getElementById('rootHint').style.display = 'flex';
-      document.getElementById('sudoHint').style.display = 'none';
-    } else {
-      document.getElementById('rootHint').style.display = 'none';
-      document.getElementById('sudoHint').style.display = 'flex';
-    }
+    return data;
   } catch {
     document.getElementById('osInfo').textContent = '检测失败';
+    return null;
   }
+}
+
+async function loadFullStatus() {
+  if (fullStatusProbePromise) return fullStatusProbePromise;
+  fullStatusProbePromise = (async () => {
+    try {
+      return await loadStatus({ full: true, fromFullProbe: true });
+    } finally {
+      fullStatusProbePromise = null;
+    }
+  })();
+  return fullStatusProbePromise;
+}
+
+async function refreshClawHubAvailability(autoSetup = false) {
+  const container = document.getElementById('skillResults');
+
+  try {
+    const res = await fetch('/api/skills/status');
+    const data = await res.json();
+    clawhubReady = !!data.available;
+    renderClawHubBootstrapHint(data.bootstrap);
+    scheduleClawHubBootstrapPoll(data.bootstrap);
+
+    const diagText = [data.command ? `探测命令: ${data.command}` : '', data.whereOutput ? `where clawhub: ${data.whereOutput}` : '', data.diagnostics || '']
+      .filter(Boolean)
+      .join('\n');
+
+    if (clawhubReady) {
+      if (container && (!container.textContent.trim() || /正在安装 ClawHub CLI|正在准备 ClawHub/.test(container.textContent))) {
+        container.innerHTML = '<div class="empty-state">ClawHub 已就绪，开始搜索吧！</div>';
+      }
+      return true;
+    }
+
+    if (!autoSetup) {
+      if (container && !document.getElementById('skillSearch')?.value.trim()) {
+        if (data.bootstrap?.status === 'running') {
+          container.innerHTML = '<div class="empty-state pulse">首次启动，正在自动准备 ClawHub CLI...</div>';
+        } else if (data.bootstrap?.status === 'error') {
+          container.innerHTML = `<div class="empty-state">ClawHub 自动准备失败：${formatClawHubError(data.bootstrap.error)}，请到工具面板查看详情<br><pre style="white-space:pre-wrap;text-align:left;max-height:180px;overflow:auto;">${diagText}</pre></div>`;
+        } else {
+          container.innerHTML = `<div class="empty-state">ClawHub CLI 未安装，Skills 市场暂不可用<br><pre style="white-space:pre-wrap;text-align:left;max-height:180px;overflow:auto;">${diagText}</pre></div>`;
+        }
+      }
+      return false;
+    }
+
+    if (data.bootstrap?.status === 'running') {
+      if (container) {
+        container.innerHTML = '<div class="empty-state pulse">首次启动，正在自动准备 ClawHub CLI...</div>';
+      }
+      return false;
+    }
+
+    if (container) {
+      container.innerHTML = '<div class="empty-state pulse">正在安装 ClawHub CLI...</div>';
+    }
+
+    const setupRes = await fetch('/api/skills/setup', { method: 'POST' });
+    const setupData = await setupRes.json();
+    clawhubReady = !!setupData.success;
+
+    if (container) {
+      container.innerHTML = clawhubReady
+        ? '<div class="empty-state">ClawHub 已就绪，开始搜索吧！</div>'
+        : `<div class="empty-state">ClawHub CLI 安装失败：${formatClawHubError(setupData.error)}，请先在工具面板检查状态<br><pre style="white-space:pre-wrap;text-align:left;max-height:180px;overflow:auto;">${setupData.diagnostics || diagText}</pre></div>`;
+    }
+
+    return clawhubReady;
+  } catch {
+    clawhubReady = false;
+    if (!autoSetup && container && !document.getElementById('skillSearch')?.value.trim()) {
+      container.innerHTML = '<div class="empty-state">ClawHub 状态检测失败</div>';
+    }
+    return false;
+  }
+}
+
+async function refreshInstallLifecycleState() {
+  await Promise.allSettled([
+    loadStatus(),
+    loadToolStatus(),
+    loadChannelsView(),
+    loadInstalledSkills(),
+    refreshClawHubAvailability(false)
+  ]);
+}
+
+async function syncOpenClawLifecycleAfterDashboardOpen() {
+  const lifecyclePromise = loadFullStatus().catch(() => loadStatus().catch(() => {}));
+  loadToolStatus().catch(() => {});
+  await lifecyclePromise;
+  scheduleLifecycleBurstRefresh({ rounds: 3, intervalMs: 1500 });
+}
+
+function scheduleLifecycleBurstRefresh(options = {}) {
+  const { rounds = 5, intervalMs = 1500 } = options;
+  if (lifecycleBurstRefreshTimer) {
+    clearInterval(lifecycleBurstRefreshTimer);
+    lifecycleBurstRefreshTimer = null;
+  }
+
+  let remaining = Math.max(0, Number(rounds) || 0);
+  if (!remaining) return;
+
+  lifecycleBurstRefreshTimer = setInterval(async () => {
+    remaining -= 1;
+    await refreshInstallLifecycleState();
+    if (remaining <= 0) {
+      clearInterval(lifecycleBurstRefreshTimer);
+      lifecycleBurstRefreshTimer = null;
+    }
+  }, Math.max(500, Number(intervalMs) || 1500));
+}
+
+function startInstallLifecyclePolling() {
+  if (installLifecyclePollTimer) clearInterval(installLifecyclePollTimer);
+  installLifecyclePollTimer = setInterval(() => {
+    if (Date.now() < suspendHeavyPollingUntil) return;
+    const toolsActive = document.getElementById('panel-tools')?.classList.contains('active');
+    const logVisible = document.getElementById('installLog')?.style.display === 'block';
+    if (toolsActive || logVisible) {
+      loadStatus();
+    }
+  }, 10000);
+}
+
+function startToolStatusPolling() {
+  if (toolStatusPollTimer) clearInterval(toolStatusPollTimer);
+  toolStatusPollTimer = setInterval(() => {
+    if (Date.now() < suspendHeavyPollingUntil) return;
+    const toolsActive = document.getElementById('panel-tools')?.classList.contains('active');
+    if (toolsActive) {
+      loadToolStatus();
+    }
+  }, 12000);
 }
 
 // ========== 模型配置 ==========
@@ -371,38 +821,19 @@ async function addModel() {
     return;
   }
 
-  // 步骤1：验证 API Key
-  msg.textContent = '⏳ 验证中...';
+  msg.textContent = '⏳ 保存中...';
   msg.className = 'save-msg info';
 
   try {
-    const verifyRes = await fetch('/api/models/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, model, apiKey })
-    });
-    const verifyData = await verifyRes.json();
-
-    if (!verifyData.success) {
-      msg.textContent = `✗ 验证失败: ${verifyData.error || 'API Key 无效'}`;
-      msg.className = 'save-msg error';
-      setTimeout(() => { msg.textContent = ''; }, 5000);
-      return;
-    }
-
-    // 步骤2：验证通过，添加模型
-    msg.textContent = '⏳ 验证通过，正在添加...';
-    msg.className = 'save-msg info';
-
     const res = await fetch('/api/models/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, model, apiKey })
+      body: JSON.stringify({ provider, model, apiKey, skipVerify: true })
     });
     const data = await res.json();
 
     if (data.success) {
-      msg.textContent = '✓ 已添加并设为默认';
+      msg.textContent = '✓ 已保存并设为默认，可稍后再验证连接';
       msg.className = 'save-msg success';
       document.getElementById('apiKey').value = '';
       expandedModelProviders.add(provider);
@@ -411,7 +842,7 @@ async function addModel() {
       msg.textContent = `✗ ${data.error || '添加失败'}`;
       msg.className = 'save-msg error';
     }
-    setTimeout(() => { msg.textContent = ''; }, 3000);
+    setTimeout(() => { msg.textContent = ''; }, 3500);
   } catch (err) {
     msg.textContent = `✗ 请求失败: ${err.message}`;
     msg.className = 'save-msg error';
@@ -624,6 +1055,30 @@ function getCurrentChannelMeta() {
 
 function getConnectedChannel(channelKey) {
   return connectedChannels.find((item) => item.key === channelKey);
+}
+
+function upsertConnectedChannelLocal(channel) {
+  if (!channel?.key) return;
+  const index = connectedChannels.findIndex((item) => item.key === channel.key);
+  if (channel.configured || channel.connected || channel.enabled || channel.status === 'configured_pending_pairing' || channel.status === 'connected') {
+    if (index >= 0) {
+      connectedChannels[index] = channel;
+    } else {
+      connectedChannels.unshift(channel);
+    }
+  } else if (index >= 0) {
+    connectedChannels.splice(index, 1);
+  }
+}
+
+function removeConnectedChannelLocal(channelKey) {
+  connectedChannels = connectedChannels.filter((item) => item.key !== channelKey);
+}
+
+function refreshChannelsViewLocal() {
+  renderChannelSelector();
+  fillChannelConfigPanel();
+  renderConnectedChannels();
 }
 
 function getChannelStatusText(channel) {
@@ -933,13 +1388,14 @@ async function saveChannelManualConfig() {
 
     msg.textContent = getChannelSaveSuccessText(data.channel);
     msg.className = 'save-msg success';
+    upsertConnectedChannelLocal(data.channel);
+    refreshChannelsViewLocal();
     (meta.schema?.credentials || []).forEach((field) => {
       if (field.secret) {
         const input = document.getElementById(`channelField-${field.key}`);
         if (input) input.value = '';
       }
     });
-    await loadChannelsView();
   } catch (err) {
     msg.textContent = `✗ ${err.message}`;
     msg.className = 'save-msg error';
@@ -962,7 +1418,9 @@ async function toggleConnectedChannel(channelKey, enabled, btn) {
     if (!data.success) {
       throw new Error(data.error || '状态更新失败');
     }
-    await loadChannelsView();
+    upsertConnectedChannelLocal(data.channel);
+    refreshChannelsViewLocal();
+    if (btn) btn.disabled = false;
   } catch (err) {
     alert('状态更新失败: ' + err.message);
     if (btn) btn.disabled = false;
@@ -984,10 +1442,14 @@ async function removeConnectedChannel(channelKey, btn) {
       throw new Error(data.error || '移除失败');
     }
 
+    removeConnectedChannelLocal(channelKey);
     if (currentChannelKey === channelKey) {
-      fillChannelConfigPanel();
+      refreshChannelsViewLocal();
+    } else {
+      renderConnectedChannels();
+      renderChannelSelector();
     }
-    await loadChannelsView();
+    if (btn) btn.disabled = false;
   } catch (err) {
     alert('移除失败: ' + err.message);
     if (btn) btn.disabled = false;
@@ -1143,6 +1605,7 @@ async function startInstall() {
   const log = document.getElementById('installLog');
   const steps = document.getElementById('installSteps');
 
+  installActionInFlight = true;
   btn.disabled = true;
   btn.textContent = '安装中...';
   log.style.display = 'block';
@@ -1150,34 +1613,35 @@ async function startInstall() {
 
   try {
     const res = await fetch('/api/install', { method: 'POST' });
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const lines = decoder.decode(value).split('\n');
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = JSON.parse(line.slice(6));
-          if (data.type === 'progress' && data.steps) {
-            renderSteps(steps, data.steps);
+    await readSseJsonStream(res, async (data) => {
+      if (data.type === 'progress' && data.steps) {
+        renderSteps(steps, data.steps);
+      }
+      if (data.type === 'done') {
+        installActionInFlight = false;
+        const status = await loadStatus();
+        await refreshInstallLifecycleState();
+        if (status?.openclawInstalled) {
+          const lifecycle = status.openclawLifecycle || {};
+          if (data.success) {
+            btn.textContent = '✓ 安装完成';
+            btn.style.background = 'var(--success)';
+          } else if (data.partial || lifecycle.stage === 'init_incomplete' || lifecycle.stage === 'gateway_incomplete') {
+            btn.textContent = lifecycle.stage === 'gateway_incomplete' ? '已安装，Gateway 待补完成' : '已安装，待补完成';
+            btn.style.background = 'var(--warning, #f59e0b)';
+            scheduleLifecycleBurstRefresh();
+          } else {
+            btn.textContent = '安装失败，重试';
+            btn.disabled = false;
           }
-          if (data.type === 'done') {
-            if (data.success) {
-              btn.textContent = '✓ 安装完成';
-              btn.style.background = 'var(--success)';
-              loadStatus();
-            } else {
-              btn.textContent = '安装失败，重试';
-              btn.disabled = false;
-            }
-          }
+        } else {
+          btn.textContent = '安装失败，重试';
+          btn.disabled = false;
         }
       }
-    }
+    });
   } catch (err) {
+    installActionInFlight = false;
     btn.textContent = '安装失败，重试';
     btn.disabled = false;
     steps.innerHTML += `<div class="install-step"><span class="icon">✗</span><span class="detail">${err.message}</span></div>`;
@@ -1189,6 +1653,7 @@ async function startUpdate() {
   const log = document.getElementById('installLog');
   const steps = document.getElementById('installSteps');
 
+  updateActionInFlight = true;
   btn.disabled = true;
   btn.textContent = '更新中...';
   log.style.display = 'block';
@@ -1196,29 +1661,24 @@ async function startUpdate() {
 
   try {
     const res = await fetch('/api/update', { method: 'POST' });
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const lines = decoder.decode(value).split('\n');
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = JSON.parse(line.slice(6));
-          if (data.type === 'progress' && data.steps) {
-            renderSteps(steps, data.steps);
-          }
-          if (data.type === 'done') {
-            btn.textContent = data.success ? '✓ 更新完成' : '更新失败';
-            btn.disabled = false;
-            loadStatus();
-          }
-        }
+    await readSseJsonStream(res, async (data) => {
+      if (data.type === 'progress' && data.steps) {
+        renderSteps(steps, data.steps);
       }
-    }
+      if (data.type === 'done') {
+        updateActionInFlight = false;
+        if (data.success && data.skipped === 'already_latest') {
+          btn.textContent = data.latestVersion ? `已是最新版本 (${data.latestVersion})` : '已是最新版本';
+        } else {
+          btn.textContent = data.success ? '✓ 更新完成' : '更新失败';
+        }
+        btn.disabled = false;
+        await refreshInstallLifecycleState();
+        scheduleLifecycleBurstRefresh();
+      }
+    });
   } catch (err) {
+    updateActionInFlight = false;
     btn.textContent = '更新失败';
     btn.disabled = false;
   }
@@ -1241,6 +1701,7 @@ async function startUninstall() {
   const log = document.getElementById('installLog');
   const steps = document.getElementById('installSteps');
 
+  uninstallActionInFlight = true;
   btn.disabled = true;
   btn.textContent = '卸载中...';
   log.style.display = 'block';
@@ -1248,38 +1709,40 @@ async function startUninstall() {
 
   try {
     const res = await fetch('/api/uninstall', { method: 'POST' });
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const lines = decoder.decode(value).split('\n');
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = JSON.parse(line.slice(6));
-          if (data.type === 'progress' && data.steps) {
-            renderSteps(steps, data.steps);
-          }
-          if (data.type === 'done') {
-            if (data.success) {
-              btn.textContent = '✓ 已卸载';
-              btn.style.background = 'var(--error)';
-            } else {
-              btn.textContent = '卸载失败，重试';
-              btn.disabled = false;
-            }
-            loadStatus();
-          }
+    await readSseJsonStream(res, async (data) => {
+      if (data.type === 'progress' && data.steps) {
+        renderSteps(steps, data.steps);
+      }
+      if (data.type === 'done') {
+        uninstallActionInFlight = false;
+        const status = await loadStatus();
+        await refreshInstallLifecycleState();
+        scheduleLifecycleBurstRefresh();
+        if (data.success && status && status.openclawInstalled === false) {
+          btn.textContent = '✓ 已卸载';
+          btn.style.background = 'var(--error)';
+        } else {
+          btn.textContent = '卸载失败，重试';
+          btn.disabled = false;
         }
       }
-    }
+    });
   } catch (err) {
+    uninstallActionInFlight = false;
     btn.textContent = '卸载失败，重试';
     btn.disabled = false;
     steps.innerHTML += `<div class="install-step"><span class="icon">✗</span><span class="detail">${err.message}</span></div>`;
   }
+}
+
+function compactStepDetail(step) {
+  const detail = String(step?.detail || '').trim();
+  if (!detail) return '';
+  const singleLine = detail.replace(/\s+/g, ' ').trim();
+  if (step?.name === 'verify' || step?.name === 'install_openclaw_stream') {
+    return singleLine.length > 220 ? `${singleLine.slice(0, 219)}…` : singleLine;
+  }
+  return detail;
 }
 
 function renderSteps(container, steps) {
@@ -1287,10 +1750,11 @@ function renderSteps(container, steps) {
   container.innerHTML = steps.map(s => `
     <div class="install-step">
       <span class="icon">${icons[s.status] || '○'}</span>
-      <span class="name">${s.name}</span>
-      <span class="detail">${s.detail || ''}</span>
+      <span class="name">${getStepLabel(s.name)}</span>
+      <span class="detail">${compactStepDetail(s)}</span>
     </div>
   `).join('');
+  container.parentElement?.scrollTo({ top: container.parentElement.scrollHeight, behavior: 'smooth' });
 }
 
 // ========== 网关 ==========
@@ -1305,11 +1769,12 @@ async function restartGateway() {
     const data = await res.json();
 
     if (data.success) {
-      msg.textContent = '✓ 网关已重启';
+      msg.textContent = data.degraded
+        ? `✓ 网关已恢复可用${data.note ? `；${data.note}` : ''}`
+        : '✓ 网关已重启';
       msg.className = 'save-msg success';
-      setTimeout(() => {
-        loadStatus();
-      }, 1500);
+      await refreshInstallLifecycleState();
+      scheduleLifecycleBurstRefresh({ rounds: 6, intervalMs: 1500 });
     } else {
       msg.textContent = `✗ ${data.error}`;
       msg.className = 'save-msg error';
@@ -1318,7 +1783,30 @@ async function restartGateway() {
     msg.textContent = '✗ 重启失败';
     msg.className = 'save-msg error';
   }
-  setTimeout(() => { msg.textContent = ''; }, 3000);
+  setTimeout(() => { msg.textContent = ''; }, 5000);
+}
+
+async function refreshGatewayStatus() {
+  const button = document.getElementById('btnRefreshGatewayStatus');
+  const gatewayInfo = document.getElementById('gatewayInfo');
+  const restoreButton = setButtonBusy(button, '刷新中...', '刷新');
+  const previousText = gatewayInfo?.textContent || '';
+
+  if (gatewayInfo) {
+    gatewayInfo.textContent = '检测中...';
+    gatewayInfo.className = 'value';
+  }
+
+  try {
+    await loadStatus();
+    await loadToolStatus();
+  } catch {
+    if (gatewayInfo && previousText) {
+      gatewayInfo.textContent = previousText;
+    }
+  } finally {
+    restoreButton();
+  }
 }
 
 // ========== 工具面板 ==========
@@ -1327,34 +1815,77 @@ async function loadToolStatus() {
   try {
     const res = await fetch('/api/tools/status');
     const data = await res.json();
+    latestToolStatus = data;
 
     // Node.js
     const nodeEl = document.getElementById('toolNodeStatus');
+    const nodeBtn = document.getElementById('btnUninstallNode');
+    const nodeStatus = data.node?.uninstallStatus || (data.node?.installed ? 'removable' : (data.runtimeNode?.installed ? 'runtime_only' : 'absent'));
     if (data.node?.installed) {
-      nodeEl.textContent = `${data.node.version} (${data.node.path})`;
-      nodeEl.className = 'tool-status ok';
+      const versionText = data.node.version || '未知版本';
+      const pathText = data.node.path || '未知路径';
+      const nodeSummary = `${versionText} (${pathText})`;
+      const diagnostics = data.node?.diagnostics || {};
+      const extraDiag = (nodeStatus !== 'removable' && (diagnostics.runtimePath || diagnostics.nodeSource || diagnostics.runtimeSource))
+        ? `；诊断：nodeSource=${diagnostics.nodeSource || 'unknown'} / runtimeSource=${diagnostics.runtimeSource || 'unknown'}${diagnostics.runtimePath ? ` / runtime=${diagnostics.runtimePath}` : ''}`
+        : '';
+      if (nodeStatus === 'removable') {
+        nodeEl.textContent = nodeSummary;
+        nodeEl.className = 'tool-status ok';
+      } else {
+        nodeEl.textContent = `${nodeSummary}；${data.node.uninstallHint || '当前会话内不可自动卸载'}${extraDiag}`;
+        nodeEl.className = 'tool-status warn';
+      }
+    } else if (nodeStatus === 'runtime_only' && data.runtimeNode?.installed) {
+      nodeEl.textContent = data.node?.uninstallHint || `未检测到可单独管理的系统 Node.js；当前 ClawBox 运行时为 ${data.runtimeNode.version} (${data.runtimeNode.path})`;
+      nodeEl.className = 'tool-status warn';
+    } else if (nodeStatus === 'runtime_not_isolated') {
+      nodeEl.textContent = data.node?.uninstallHint || `当前运行时尚未与系统 Node.js 隔离；运行时 ${data.runtimeNode?.version || '未知版本'} (${data.runtimeNode?.path || '未知路径'})`;
+      nodeEl.className = 'tool-status warn';
     } else {
-      nodeEl.textContent = '未安装';
+      nodeEl.textContent = data.node?.uninstallHint || '未安装';
       nodeEl.className = 'tool-status err';
+    }
+    if (nodeBtn) {
+      nodeBtn.disabled = nodeStatus !== 'removable';
+      nodeBtn.title = getNodeUninstallButtonTitle(data);
     }
 
     // ClawHub
     const clawhubEl = document.getElementById('toolClawhubStatus');
     if (data.clawhub?.installed) {
-      clawhubEl.textContent = `已安装 (${data.clawhub.path})`;
+      clawhubEl.textContent = data.clawhub.path ? `已安装 (${data.clawhub.path})` : '已安装';
+      if (data.clawhub?.bootstrap?.detail) clawhubEl.textContent += ` · ${data.clawhub.bootstrap.detail}`;
       clawhubEl.className = 'tool-status ok';
     } else {
       clawhubEl.textContent = '未安装';
       clawhubEl.className = 'tool-status err';
     }
 
+    if (data.clawhub?.bootstrap?.status === 'running') {
+      clawhubEl.textContent = data.clawhub.bootstrap.detail || '正在自动准备 ClawHub CLI...';
+      clawhubEl.className = 'tool-status warn';
+    } else if (data.clawhub?.bootstrap?.status === 'error') {
+      clawhubEl.textContent = `自动准备失败：${data.clawhub.bootstrap.error || '未知错误'}`;
+      clawhubEl.className = 'tool-status err';
+    }
+
     // OpenClaw
     const openclawEl = document.getElementById('toolOpenclawStatus');
     if (data.openclaw?.installed) {
-      openclawEl.textContent = data.openclaw.version || '已安装';
-      openclawEl.className = 'tool-status ok';
+      const lifecycle = data.openclaw.lifecycle || {};
+      const extra = data.openclaw.path ? ` (${data.openclaw.path})` : '';
+      const gatewayFailureHint = lifecycle.stage === 'gateway_incomplete'
+        ? (lifecycle.gatewayFailure === 'permission'
+          ? '；Gateway 服务注册需要管理员权限'
+          : lifecycle.gatewayFailure === 'timeout'
+            ? '；Gateway 启动超时'
+            : '')
+        : '';
+      openclawEl.textContent = `${data.openclaw.version || '已安装'}${extra}${lifecycle.title ? `；${lifecycle.title}` : ''}${lifecycle.detail ? `；${lifecycle.detail}` : ''}${gatewayFailureHint}${data.openclaw.summary ? `；${data.openclaw.summary}` : ''}`;
+      openclawEl.className = `tool-status ${getOpenClawLifecycleTone(lifecycle)}`;
     } else {
-      openclawEl.textContent = '未安装';
+      openclawEl.textContent = data.openclaw?.summary || '未安装';
       openclawEl.className = 'tool-status err';
     }
   } catch (err) {
@@ -1371,10 +1902,114 @@ function showToolLog(msg, type = 'info') {
     <span class="detail">${msg}</span>
   </div>`;
 }
+function showToolLogHtml(html) {
+  const log = document.getElementById('toolLog');
+  const content = document.getElementById('toolLogContent');
+  log.style.display = 'block';
+  content.innerHTML = html;
+}
+
+function formatRepairList(title, items, field = 'path', formatter = null) {
+  if (!items || !items.length) return '';
+  return [
+    '<div class="tool-report-block">',
+    `  <div class="tool-report-title">${escHtml(title)}</div>`,
+    '  <ul class="tool-report-list">',
+    ...items.map((item) => {
+      if (typeof formatter === 'function') return formatter(item);
+      const label = item?.[field] || item?.name || '-';
+      const extra = item?.error ? ` · ${escHtml(item.error)}` : '';
+      return `    <li><code>${escHtml(label)}</code>${extra}</li>`;
+    }),
+    '  </ul>',
+    '</div>'
+  ].join('\n');
+}
+
+function formatRepairEnvironmentReport(report) {
+  const recommendation = report?.recommendation || {};
+  const failedDeletes = Array.isArray(report?.failedDeletes) ? report.failedDeletes : [];
+  const failedDeleteStats = {
+    busy: failedDeletes.filter((item) => item.category === 'busy').length,
+    permission: failedDeletes.filter((item) => item.category === 'permission').length,
+    missing: failedDeletes.filter((item) => item.category === 'missing').length,
+    unknown: failedDeletes.filter((item) => item.category === 'unknown').length
+  };
+  const skippedProcesses = Array.isArray(report?.skippedProcesses) ? report.skippedProcesses : [];
+  const summaryRows = [
+    ['扫描到的进程', String(report?.scannedProcesses?.length || 0)],
+    ['成功结束的进程', String(report?.killedProcesses?.length || 0)],
+    ['已跳过的进程', String(skippedProcesses.length || 0)],
+    ['发现的路径', String(report?.foundPaths?.length || 0)],
+    ['实际删除的路径', String(report?.deletedPaths?.length || 0)],
+    ['触发 rename-then-delete', String(report?.summary?.renameAttempted || 0)],
+    ['rename 成功', String(report?.summary?.renameSucceeded || 0)],
+    ['rename 后删除成功', String(report?.summary?.renameDeleteSucceeded || 0)],
+    ['仅扫描未删除', String(report?.scanOnlyPaths?.length || 0)],
+    ['删除失败：被占用 / 带锁', String(failedDeleteStats.busy)],
+    ['删除失败：权限不足', String(failedDeleteStats.permission)],
+    ['删除失败：路径已不存在', String(failedDeleteStats.missing)],
+    ['删除失败：未知', String(failedDeleteStats.unknown)],
+    ['结束失败的进程', String(report?.processKillFailures?.length || 0)]
+  ];
+
+  return [
+    `<div class="tool-report ${recommendation.level || 'info'}">`,
+    '  <div class="install-step">',
+    `    <span class="icon">${recommendation.retryOpenClawInstall ? '✓' : '⚠'}</span>`,
+    `    <span class="detail"><strong>建议：</strong>${escHtml(recommendation.message || '修复完成')}</span>`,
+    '  </div>',
+    '  <div class="tool-report-summary">',
+    ...summaryRows.map(([label, value]) => `    <div class="tool-report-summary-row"><span>${escHtml(label)}</span><strong>${escHtml(value)}</strong></div>`),
+    '  </div>',
+    formatRepairList('结束的进程', report?.killedProcesses, 'name', (item) => `    <li><code>${escHtml(item?.name || '-')}</code>${item?.pid ? ` (PID ${escHtml(String(item.pid))})` : ''}${item?.reasons?.length ? ` · ${escHtml(item.reasons.join('；'))}` : ''}</li>`),
+    formatRepairList('已跳过的进程', skippedProcesses, 'name', (item) => `    <li><code>${escHtml(item?.name || '-')}</code>${item?.pid ? ` (PID ${escHtml(String(item.pid))})` : ''}${item?.skipReason ? ` · 已跳过：${escHtml(item.skipReason)}` : ''}${item?.reasons?.length ? ` · ${escHtml(item.reasons.join('；'))}` : ''}</li>`),
+    formatRepairList('结束失败的进程', report?.processKillFailures, 'name', (item) => `    <li><code>${escHtml(item?.name || '-')}</code>${item?.pid ? ` (PID ${escHtml(String(item.pid))})` : ''}${item?.reasons?.length ? ` · ${escHtml(item.reasons.join('；'))}` : ''}${item?.error ? ` · ${escHtml(item.error)}` : ''}</li>`),
+    formatRepairList('删除失败分类', failedDeletes, 'path', (item) => `    <li><code>${escHtml(item?.originalPath || item?.path || '-')}</code> · ${escHtml(item?.label || '删除失败')} · ${escHtml(item?.message || item?.error || '')}${item?.renameAttempted ? ` · rename-then-delete: 已触发 / ${item?.renameSucceeded ? 'rename 成功' : 'rename 失败'} / ${item?.finalDeleteSucceeded ? '最终删除成功' : '最终删除失败'}` : ''}${item?.likelyLockerTypes?.length ? ` · 可能占用者: ${escHtml(item.likelyLockerTypes.join(' / '))}` : ''}${item?.suggestedActions?.length ? ` · 建议: ${escHtml(item.suggestedActions.join('；'))}` : ''}</li>`),
+    formatRepairList('发现的路径', report?.foundPaths, 'path', (item) => `    <li><code>${escHtml(item?.path || '-')}</code> · ${escHtml(item?.tool || '-')} · ${escHtml(item?.source || '-')}${item?.safeToDelete ? ' · 默认会处理' : ' · 仅扫描未删除'}</li>`),
+    formatRepairList('实际删除的路径', report?.deletedPaths, 'path', (item) => `    <li><code>${escHtml(item?.originalPath || item?.path || '-')}</code> · ${escHtml(item?.tool || '-')} · ${escHtml(item?.kind || '-')}${item?.renameAttempted ? ` · rename-then-delete 成功（当前删除目标：${escHtml(item?.path || '-')})` : ''}</li>`),
+    formatRepairList('仅扫描未删除的路径', report?.scanOnlyPaths, 'path', (item) => `    <li><code>${escHtml(item?.path || '-')}</code> · ${escHtml(item?.tool || '-')} · ${escHtml(item?.kind || '-')}${item?.preserveReason ? ` · ${escHtml(item.preserveReason)}` : ''}</li>`),
+    '  <div class="tool-report-block">',
+    '    <div class="tool-report-title">详细日志</div>',
+    `    <pre class="tool-report-log">${escHtml((report?.logs || []).join('\n') || '无详细日志')}</pre>`,
+    '  </div>',
+    '</div>'
+  ].filter(Boolean).join('\n');
+}
+
+async function repairEnvironment() {
+  const btn = document.getElementById('btnRepairEnvironment');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '清场中...';
+  }
+  showToolLog('正在扫描并清理 Windows 安装残留...');
+  try {
+    const res = await fetch('/api/tools/repair-environment', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || (!data.success && !data.report)) {
+      throw new Error(data.error || '修复安装环境失败');
+    }
+    showToolLogHtml(formatRepairEnvironmentReport(data.report));
+    await refreshInstallLifecycleState();
+  } catch (err) {
+    showToolLog(`修复失败: ${err.message}`, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '安装前清场';
+    }
+  }
+}
 
 async function uninstallNode() {
-  if (!confirm('确定要卸载 Node.js 吗？卸载后 ClawBox 和 OpenClaw 都将无法运行。')) return;
-  showToolLog('正在卸载 Node.js...');
+  const confirmMessage = getNodeUninstallConfirmMessage(latestToolStatus);
+  if (!latestToolStatus?.node?.installed) {
+    showToolLog(confirmMessage, 'error');
+    return;
+  }
+  if (!confirm(confirmMessage)) return;
+  showToolLog('正在检查 Node.js 卸载条件...');
   try {
     const res = await fetch('/api/tools/uninstall-node', { method: 'POST' });
     const data = await res.json();
@@ -1405,42 +2040,67 @@ async function uninstallOpenclawTool() {
   showToolLog('正在卸载 OpenClaw...');
   try {
     const res = await fetch('/api/uninstall', { method: 'POST' });
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const lines = decoder.decode(value).split('\n');
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = JSON.parse(line.slice(6));
-          if (data.type === 'progress' && data.detail) {
-            showToolLog(data.detail);
-          }
-          if (data.type === 'done') {
-            showToolLog(data.success ? 'OpenClaw 已卸载' : '卸载失败', data.success ? 'success' : 'error');
-            loadToolStatus();
-            loadStatus();
-          }
-        }
+    await readSseJsonStream(res, async (data) => {
+      if (data.type === 'progress' && data.detail) {
+        showToolLog(data.detail);
       }
-    }
+      if (data.type === 'done') {
+        showToolLog(data.success ? 'OpenClaw 已卸载' : '卸载失败', data.success ? 'success' : 'error');
+        await refreshInstallLifecycleState();
+      }
+    });
   } catch (err) {
     showToolLog(`卸载失败: ${err.message}`, 'error');
   }
 }
 
 async function openOpenclawDashboard() {
+  const button = document.getElementById('btnOpenClawDashboard');
+  const restoreButton = setButtonBusy(button, '正在打开...', '打开OpenClaw面板');
+  const startedAt = performance.now();
+  suspendHeavyPollingUntil = Date.now() + 8000;
+
+  if (false) { // Disabled: every reopen must revalidate the Dashboard URL via the backend.
+    showToolLog(`复用最近一次可用的 OpenClaw Dashboard 地址...（cache ${(performance.now() - startedAt).toFixed(0)}ms）`, 'success');
+    const beforeOpenAt = performance.now();
+    void lastSuccessfulDashboardUrl;
+    showToolLog(`window.open 已调用（${(performance.now() - beforeOpenAt).toFixed(0)}ms）`, 'success');
+    syncOpenClawLifecycleAfterDashboardOpen().catch(() => {});
+    restoreButton();
+    return;
+  }
+
+  showToolLog('正在获取 OpenClaw Dashboard 地址...');
+
   try {
+    const fetchStartedAt = performance.now();
     const res = await fetch('/api/tools/openclaw-dashboard');
+    const responseAt = performance.now();
     const data = await res.json();
+    const parsedAt = performance.now();
+    showToolLog(`Dashboard 接口返回：network ${(responseAt - fetchStartedAt).toFixed(0)}ms / json ${(parsedAt - responseAt).toFixed(0)}ms`, 'success');
+
     if (data.success) {
+      const portHint = data.port ? `（port ${data.port}）` : '';
+      showToolLog(`Dashboard 地址已就绪 ${portHint}`.trim(), 'success');
+      lastSuccessfulDashboardUrl = data.url;
+      lastSuccessfulDashboardAt = Date.now();
+      const beforeOpenAt = performance.now();
       window.open(data.url, '_blank');
-    } else {
-      alert(data.error || '无法获取 Dashboard 地址');
+      showToolLog(`window.open 已调用（${(performance.now() - beforeOpenAt).toFixed(0)}ms / total ${(performance.now() - startedAt).toFixed(0)}ms）`, 'success');
+      syncOpenClawLifecycleAfterDashboardOpen().catch(() => {});
+      return;
     }
+
+    const message = data.error || '无法获取 Dashboard 地址';
+    showToolLog(message, 'error');
+    alert(message);
   } catch (err) {
-    alert(`获取失败: ${err.message}`);
+    const message = `获取失败: ${err.message}`;
+    showToolLog(message, 'error');
+    alert(message);
+  } finally {
+    restoreButton();
   }
 }
 
@@ -1464,9 +2124,14 @@ async function uninstallClawBox() {
 
 // ========== Skills ==========
 
-let clawhubReady = false;
 let searchDebounce = null;
 let lastSearchTime = 0; // 本地限流：3秒内不允许重复搜索
+let installLifecyclePollTimer = null;
+let toolStatusPollTimer = null;
+let lifecycleBurstRefreshTimer = null;
+let installActionInFlight = false;
+let updateActionInFlight = false;
+let uninstallActionInFlight = false;
 
 function onSkillSearchKeyup(event) {
   if (event.key === 'Enter') {
@@ -1479,27 +2144,7 @@ function onSkillSearchKeyup(event) {
 }
 
 async function checkClawHub() {
-  try {
-    const res = await fetch('/api/skills/status');
-    const data = await res.json();
-    if (data.available) {
-      clawhubReady = true;
-      return;
-    }
-    // clawhub 不可用，尝试安装
-    const container = document.getElementById('skillResults');
-    container.innerHTML = '<div class="empty-state pulse">正在安装 ClawHub CLI...</div>';
-    const setupRes = await fetch('/api/skills/setup', { method: 'POST' });
-    const setupData = await setupRes.json();
-    if (setupData.success) {
-      clawhubReady = true;
-      container.innerHTML = '<div class="empty-state">ClawHub 已就绪，开始搜索吧！</div>';
-    } else {
-      container.innerHTML = '<div class="empty-state">ClawHub 安装失败，请手动运行: npm install -g clawhub</div>';
-    }
-  } catch {
-    clawhubReady = false;
-  }
+  return refreshClawHubAvailability(true);
 }
 
 async function searchSkills(event) {
@@ -1507,14 +2152,20 @@ async function searchSkills(event) {
   const query = document.getElementById('skillSearch').value.trim();
   if (!query) return;
 
-  // 本地限流：3秒内不允许重复搜索
+  const normalizedQuery = query.toLowerCase();
   const now = Date.now();
-  if (now - lastSearchTime < 3000) {
+  const container = document.getElementById('skillResults');
+  const cached = skillSearchCache.get(normalizedQuery);
+  if (cached && (now - cached.time) < 15000) {
+    container.innerHTML = cached.html;
+    return;
+  }
+
+  // 本地限流：3秒内不允许重复搜索
+  if (now - lastSearchTime < 3000 && skillSearchInFlight !== normalizedQuery) {
     return;
   }
   lastSearchTime = now;
-
-  const container = document.getElementById('skillResults');
 
   // 确保 clawhub 可用
   if (!clawhubReady) {
@@ -1523,6 +2174,10 @@ async function searchSkills(event) {
     if (!clawhubReady) return;
   }
 
+  if (skillSearchInFlight === normalizedQuery) {
+    return;
+  }
+  skillSearchInFlight = normalizedQuery;
   container.innerHTML = '<div class="empty-state pulse">搜索中...</div>';
 
   try {
@@ -1535,6 +2190,7 @@ async function searchSkills(event) {
     }
     if (!data.output) {
       container.innerHTML = `<div class="empty-state">未找到相关 Skills</div>`;
+      skillSearchCache.set(normalizedQuery, { time: Date.now(), html: container.innerHTML });
       return;
     }
 
@@ -1564,8 +2220,13 @@ async function searchSkills(event) {
         </div>
       `;
     }).join('');
+    skillSearchCache.set(normalizedQuery, { time: Date.now(), html: container.innerHTML });
   } catch (err) {
     container.innerHTML = `<div class="empty-state">搜索失败: ${err.message}</div>`;
+  } finally {
+    if (skillSearchInFlight === normalizedQuery) {
+      skillSearchInFlight = null;
+    }
   }
 }
 
@@ -1670,6 +2331,7 @@ let pendingInstallBtn = null;
 function openSkillInstallModal(slug, btn) {
   pendingInstallSlug = slug;
   pendingInstallBtn = btn;
+  if (btn) btn.disabled = true;
   document.getElementById('modalSkillSlug').textContent = slug;
   document.getElementById('modalSkillDesc').textContent = btn.closest('.skill-result-item')?.querySelector('.skill-result-desc')?.textContent || btn.closest('.skill-card')?.querySelector('.skill-info p')?.textContent || 'ClawHub Skill';
   document.getElementById('skillInstallModal').style.display = 'flex';
@@ -1682,6 +2344,9 @@ function openSkillInstallModal(slug, btn) {
 
 function closeSkillInstallModal() {
   document.getElementById('skillInstallModal').style.display = 'none';
+  if (pendingInstallBtn && pendingInstallBtn.textContent !== '✓ 已安装') {
+    pendingInstallBtn.disabled = false;
+  }
   pendingInstallSlug = '';
   pendingInstallBtn = null;
 }
@@ -1719,13 +2384,14 @@ async function confirmInstallSkill() {
       if (pendingInstallBtn) {
         pendingInstallBtn.textContent = '✓ 已安装';
         pendingInstallBtn.style.color = 'var(--success)';
+        pendingInstallBtn.disabled = true;
       }
 
-      // 刷新已安装列表
+      // 局部更新搜索结果按钮，并异步刷新已安装列表
       setTimeout(() => {
-        loadInstalledSkills();
         closeSkillInstallModal();
-      }, 1200);
+        loadInstalledSkills();
+      }, 600);
     } else {
       progressText.textContent = `✗ ${data.error || '安装失败'}`;
       progressFill.style.background = 'var(--error)';

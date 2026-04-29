@@ -1,0 +1,23 @@
+{
+  "task_id": "TASK-9005",
+  "phase": "planning",
+  "status": "not_started",
+  "summary": "验证 bugfix area 预填骨架",
+  "current_focus": "验证 bugfix area 预填骨架",
+  "completed_steps": [],
+  "next_steps": [
+    "先补最小复现或明确 smoke 步骤",
+    "完成代码修改后先跑功能验证与相邻回归检查",
+    "功能关通过后再考虑 packaging_validation"
+  ],
+  "blockers": [],
+  "artifacts": [],
+  "related_runbooks": [
+    "docs/RUNBOOKS/gateway-restart.md",
+    "docs/RUNBOOKS/status-detection.md",
+    "docs/RUNBOOKS/dashboard-url-detection.md",
+    "docs/RUNBOOKS/tauri-server-sync.md"
+  ],
+  "last_updated_by": "main-agent",
+  "last_updated_at": "2026-04-05T04:19:13.490Z"
+}

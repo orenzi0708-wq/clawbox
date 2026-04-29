@@ -1,4 +1,4 @@
-# ClawBox Bootstrap Script for Windows
+﻿# ClawBox Bootstrap Script for Windows
 # Usage: powershell -c "irm https://raw.githubusercontent.com/<repo>/main/setup.ps1 | iex"
 #    or: powershell -ExecutionPolicy Bypass -File setup.ps1
 
@@ -22,6 +22,61 @@ if ($isAdmin) {
     Write-Host "! 运行模式: 非管理员（部分操作可能需要管理员权限）" -ForegroundColor Yellow
 }
 
+function Refresh-ProcessPath {
+    $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = (($machinePath, $userPath) | Where-Object { $_ }) -join ";"
+}
+
+function Resolve-NodeCommand {
+    $candidates = @()
+
+    try {
+        $cmd = Get-Command node -ErrorAction Stop
+        if ($cmd.Source) {
+            $candidates += $cmd.Source
+        }
+    } catch {}
+
+    foreach ($path in @(
+        "$env:ProgramFiles\nodejs\node.exe",
+        "${env:ProgramFiles(x86)}\nodejs\node.exe",
+        "$env:LOCALAPPDATA\Programs\nodejs\node.exe",
+        "$env:LOCALAPPDATA\nodejs\node.exe",
+        "$env:ChocolateyInstall\bin\node.exe",
+        "$env:USERPROFILE\scoop\apps\nodejs-lts\current\node.exe",
+        "$env:USERPROFILE\scoop\apps\nodejs\current\node.exe"
+    )) {
+        if ($path -and (Test-Path $path)) {
+            $candidates += $path
+        }
+    }
+
+    return $candidates | Select-Object -Unique | Select-Object -First 1
+}
+
+function Test-NodeVersion {
+    param(
+        [string]$NodePath
+    )
+
+    if (-not $NodePath) {
+        return $null
+    }
+
+    try {
+        $nodeVer = & $NodePath -v
+        $nodeMajor = [int]($nodeVer -replace 'v(\d+)\..*', '$1')
+        return [PSCustomObject]@{
+            Ok = ($nodeMajor -ge 22)
+            Version = $nodeVer
+            Path = $NodePath
+        }
+    } catch {
+        return $null
+    }
+}
+
 # ========== 检查/安装 Node.js ==========
 function Install-Node {
     Write-Host "正在安装 Node.js..." -ForegroundColor Cyan
@@ -30,8 +85,7 @@ function Install-Node {
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host "  使用 winget 安装 Node.js 22..." -ForegroundColor Gray
         winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements --silent
-        # 刷新 PATH
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+        Refresh-ProcessPath
         return
     }
 
@@ -39,7 +93,7 @@ function Install-Node {
     if (Get-Command choco -ErrorAction SilentlyContinue) {
         Write-Host "  使用 Chocolatey 安装 Node.js 22..." -ForegroundColor Gray
         choco install nodejs-lts -y
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+        Refresh-ProcessPath
         return
     }
 
@@ -47,7 +101,7 @@ function Install-Node {
     if (Get-Command scoop -ErrorAction SilentlyContinue) {
         Write-Host "  使用 Scoop 安装 Node.js 22..." -ForegroundColor Gray
         scoop install nodejs-lts
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+        Refresh-ProcessPath
         return
     }
 
@@ -58,19 +112,20 @@ function Install-Node {
     Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath
     Start-Process msiexec.exe -ArgumentList "/i `"$msiPath`" /quiet /norestart" -Wait
     Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
-    # 刷新 PATH
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+    Refresh-ProcessPath
 }
 
 $nodeOk = $false
-if (Get-Command node -ErrorAction SilentlyContinue) {
-    $nodeVer = node -v
-    $nodeMajor = [int]($nodeVer -replace 'v(\d+)\..*', '$1')
-    if ($nodeMajor -ge 22) {
-        Write-Host "✓ Node.js $nodeVer 已安装" -ForegroundColor Green
+Refresh-ProcessPath
+$nodeCommand = Resolve-NodeCommand
+$nodeStatus = Test-NodeVersion -NodePath $nodeCommand
+if ($nodeStatus) {
+    if ($nodeStatus.Ok) {
+        Write-Host "✓ Node.js $($nodeStatus.Version) 已安装" -ForegroundColor Green
+        Write-Host "  路径: $($nodeStatus.Path)" -ForegroundColor Gray
         $nodeOk = $true
     } else {
-        Write-Host "! Node.js $nodeVer 版本过低，需要 >= 22" -ForegroundColor Yellow
+        Write-Host "! Node.js $($nodeStatus.Version) 版本过低，需要 >= 22" -ForegroundColor Yellow
     }
 } else {
     Write-Host "! Node.js 未安装" -ForegroundColor Yellow
@@ -79,8 +134,12 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
 if (-not $nodeOk) {
     Install-Node
     # 验证
-    if (Get-Command node -ErrorAction SilentlyContinue) {
-        Write-Host "✓ Node.js $(node -v) 安装完成" -ForegroundColor Green
+    Refresh-ProcessPath
+    $nodeCommand = Resolve-NodeCommand
+    $nodeStatus = Test-NodeVersion -NodePath $nodeCommand
+    if ($nodeStatus -and $nodeStatus.Ok) {
+        Write-Host "✓ Node.js $($nodeStatus.Version) 安装完成" -ForegroundColor Green
+        Write-Host "  路径: $($nodeStatus.Path)" -ForegroundColor Gray
     } else {
         Write-Host "✗ Node.js 安装失败，请手动安装: https://nodejs.org" -ForegroundColor Red
         exit 1
@@ -126,8 +185,11 @@ Write-Host "  ╔═════════════════════
 Write-Host "  ║     ✅ 环境准备就绪                ║"
 Write-Host "  ╚═══════════════════════════════════╝"
 Write-Host ""
-Write-Host "  启动 ClawBox:"
+Write-Host "  启动 ClawBox（推荐）:"
+Write-Host "    双击 run.bat"
+Write-Host ""
+Write-Host "  或命令行启动:"
 Write-Host "    cd $clawboxDir && node src\server.js"
 Write-Host ""
-Write-Host "  然后在浏览器打开: http://localhost:3456"
+Write-Host "  然后在浏览器打开: http://127.0.0.1:3456"
 Write-Host ""

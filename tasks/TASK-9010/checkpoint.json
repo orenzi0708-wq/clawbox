@@ -1,0 +1,69 @@
+{
+  "task_id": "TASK-9010",
+  "phase": "handoff",
+  "status": "passed",
+  "summary": "Windows 真机已补到关键证据：非管理员下 `openclaw gateway install` 因 `schtasks create failed: 拒绝访问` 失败，且 Startup-folder fallback 未实际落地；管理员 PowerShell 下 `gateway install` 可成功注册 Scheduled Task。手动执行 `~/.openclaw/gateway.cmd` 能正常拉起 Gateway，说明 gateway.cmd / node / dist 路径本身可用。当前任务继续维持 pass_with_followup，但 follow-up 已收敛到 Windows 服务注册/非管理员 fallback 与 ClawBox 前端体验收口。",
+  "current_focus": "Windows 真机主因已收缩为 OpenClaw 本体的非管理员 gateway install/fallback 与后续 packaging / smoke；ClawBox 侧体验层 follow-up 中，安装日志流解析、Dashboard 打开反馈、状态自动刷新与分层文案已完成一轮代码修复，下一步主要是把这些改动拿去 Windows 真机继续验证。",
+  "done_when": [
+    "Gateway restart 主流程在功能验证层面确认修复",
+    "status-detection 相关回归检查已执行并结论明确",
+    "dashboard-url-detection 相关回归检查已执行并结论明确",
+    "feature_validation 已填写完整且证据字段具备最小可信锚点",
+    "reviewer verdict 不为 needs_changes / blocked",
+    "若 packaging_validation 未开始，已明确标记 pending_reason"
+  ],
+  "completed_steps": [
+    "已初始化任务执行包骨架",
+    "已补任务 spec / 范围 / done_when / 交付标准",
+    "已明确相关 runbook 与相邻回归面",
+    "已新增 scripts/smoke-gateway-chain.js 作为最小可执行 smoke 入口",
+    "已修复 server 侧 dashboard JSON running 判定，改为复用 installer 的统一状态口径",
+    "已执行 node --check / smoke script / prepare:tauri-server，并确认 src-tauri 镜像同步",
+    "已执行 task review guard，确认任务包关键字段齐备",
+    "已完成第一轮实现回修，修正 validation 与 handoff 中的证据层表述",
+    "已由木匠完成快速复核，并确认当前应以 pass_with_followup 收口",
+    "已完成 Windows 真机补充排查：确认 openclaw.json 配置已生成，gateway.cmd / node.exe / openclaw dist 路径有效，手动执行 gateway.cmd 可成功启动 Gateway",
+    "已确认 Windows 非管理员下 gateway install 因 schtasks create failed: 拒绝访问 而失败，且 Startup-folder fallback 未实际创建任何启动项",
+    "已确认管理员 PowerShell 下 gateway install 可成功注册 Scheduled Task；注册成功后 ClawBox 能检测到 Gateway running，说明主状态判定方向成立",
+    "已提交 1a19313：修复安装/更新/卸载 SSE 分片解析，避免流式 JSON 半包触发 Unterminated string in JSON；同时补 Dashboard 打开 loading 与 tool log 反馈",
+    "已提交 370c1c5：为安装/更新/卸载/Gateway 重启/Dashboard 打开补 lifecycle burst refresh，并把 gateway permission / timeout 分层文案直接显示在状态区与工具页"
+  ],
+  "next_steps": [
+    "在 Windows 真机基于最新代码验证：安装后局部自动刷新是否稳定，不再依赖手动刷新页面",
+    "在 Windows 真机验证 Dashboard 打开体验：loading、tool log、成功/失败反馈是否符合预期",
+    "继续确认 OpenClaw 本体在非管理员 gateway install 失败后的 Startup-folder fallback 是否仍无实际落地",
+    "保留 Windows 真机上的 packaging_validation 作为后续关卡，但不再把当前问题主因误判为 gateway.cmd 或 node/dist 路径损坏"
+  ],
+  "blockers": [],
+  "artifacts": [
+    "tasks/TASK-9010/README.md",
+    "tasks/TASK-9010/checkpoint.json",
+    "tasks/TASK-9010/validation.json",
+    "tasks/TASK-9010/rollback.md",
+    "tasks/TASK-9010/handoff.md",
+    "scripts/smoke-gateway-chain.js",
+    "/tmp/clawbox-releases/ClawBox-source-bootstrap-v0.5.4-task9010-20260406-022249.zip"
+  ],
+  "related_runbooks": [
+    "docs/RUNBOOKS/gateway-restart.md",
+    "docs/RUNBOOKS/status-detection.md",
+    "docs/RUNBOOKS/dashboard-url-detection.md",
+    "docs/RUNBOOKS/tauri-server-sync.md",
+    "docs/RUNBOOKS/bugfix-workflow.md",
+    "docs/RUNBOOKS/reviewer-independent-review.md",
+    "docs/RUNBOOKS/reviewer-quickstart.md"
+  ],
+  "rollback_anchor": {
+    "baseline_commit": "a0f0ab3",
+    "rollback_target": "a0f0ab3"
+  },
+  "blocked": {
+    "is_blocked": false,
+    "blocked_reason": "",
+    "unblock_action": "",
+    "owner": "",
+    "reentry_condition": ""
+  },
+  "last_updated_by": "main-agent",
+  "last_updated_at": "2026-04-06T02:27:00+08:00"
+}

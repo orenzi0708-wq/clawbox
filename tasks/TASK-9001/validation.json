@@ -1,0 +1,76 @@
+{
+  "task_id": "TASK-9001",
+  "task_type": "process-improvement",
+  "target": {
+    "area": "task-validation",
+    "summary": "为 ClawBox 项目补齐最小可用的任务级 validation 机制",
+    "platform": [
+      "linux",
+      "windows"
+    ]
+  },
+  "files_touched": [
+    "package.json",
+    "scripts/init-validation.js",
+    "docs/RUNBOOKS/task-validation.md",
+    "tasks/_templates/validation.json.template",
+    "tasks/TASK-9001/validation.json"
+  ],
+  "checks_run": [
+    {
+      "name": "node-check-init-validation-script",
+      "kind": "syntax",
+      "command": "node --check scripts/init-validation.js",
+      "result": "passed",
+      "notes": "脚本语法通过"
+    },
+    {
+      "name": "init-validation-smoke",
+      "kind": "smoke",
+      "command": "npm run task:init-validation -- TASK-9001 --type bugfix --area validation-mechanism --summary \"为任务补齐最小 validation 机制\" --platform linux,windows",
+      "result": "passed",
+      "notes": "已成功生成 validation.json 并完成二次覆盖"
+    }
+  ],
+  "lint": {
+    "status": "not_configured",
+    "notes": "项目当前无统一 lint 脚本"
+  },
+  "typecheck": {
+    "status": "not_applicable",
+    "notes": "当前主逻辑为 JS，未配置 TypeScript typecheck"
+  },
+  "related_regression_checks": [
+    {
+      "name": "runbook-compatibility",
+      "result": "passed",
+      "notes": "validation 机制已与现有 RUNBOOKS 目录配套，未要求重构任务系统"
+    },
+    {
+      "name": "coder-reviewer-main-agent-handoff",
+      "result": "passed",
+      "notes": "文档已明确 coder / reviewer / 主 Agent 的使用边界"
+    }
+  ],
+  "smoke_checks": [
+    {
+      "name": "template-generation",
+      "result": "passed",
+      "environment": "linux",
+      "notes": "模板可被脚本初始化为任务实例"
+    }
+  ],
+  "reviewer_result": {
+    "status": "approved",
+    "summary": "已落地最小可用 schema、模板、初始化脚本和使用流程，适合当前项目先跑起来",
+    "reviewer": "main-agent"
+  },
+  "risk_level": "low",
+  "status_summary": "任务级 validation 机制已建立，可用于后续 bugfix / feature 修改后的结构化验证沉淀",
+  "open_issues": [
+    "当前尚未自动采集 git diff / checks_run，仍以人工补充为主",
+    "尚未补充批量汇总多个 TASK validation 的视图"
+  ],
+  "next_action": "后续每个新任务开始时先创建 tasks/TASK-xxxx/validation.json，并在 coder 完成修改、review 收口、真机验收后持续更新",
+  "generated_at": "2026-04-05T07:29:50+08:00"
+}

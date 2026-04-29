@@ -1,0 +1,26 @@
+{
+  "task_id": "TASK-0000",
+  "phase": "planning",
+  "status": "queued",
+  "summary": "待补充",
+  "current_focus": "待补充",
+  "done_when": [],
+  "completed_steps": [],
+  "next_steps": [],
+  "blockers": [],
+  "artifacts": [],
+  "related_runbooks": [],
+  "rollback_anchor": {
+    "baseline_commit": "",
+    "rollback_target": ""
+  },
+  "blocked": {
+    "is_blocked": false,
+    "blocked_reason": "",
+    "unblock_action": "",
+    "owner": "",
+    "reentry_condition": ""
+  },
+  "last_updated_by": "",
+  "last_updated_at": "1970-01-01T00:00:00.000Z"
+}

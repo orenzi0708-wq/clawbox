@@ -1,0 +1,22 @@
+{
+  "benchmark_id": "B-000",
+  "run_type": "quick",
+  "status": "pass",
+  "task_or_fixture": "TASK-0000",
+  "evidence": [],
+  "fail_signals": [],
+  "metrics": {
+    "task_completed": true,
+    "bugfix_correct": true,
+    "regression_introduced": false,
+    "resumption_success": true,
+    "handoff_usable": true,
+    "validation_complete": true,
+    "reviewer_quality_ok": true,
+    "runbook_used": true,
+    "memory_misled": false,
+    "human_intervention_needed": false
+  },
+  "summary": "待补充",
+  "recorded_at": "1970-01-01T00:00:00.000Z"
+}

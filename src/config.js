@@ -5,6 +5,7 @@ const os = require('os');
 // OpenClaw 配置文件路径
 const CONFIG_DIR = path.join(os.homedir(), '.openclaw');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'openclaw.json');
+const CLAWBOX_CHANNEL_STATE_FILE = path.join(CONFIG_DIR, 'clawbox.channels.json');
 
 const DEFAULT_PROVIDER_CONFIG = {
   deepseek: {
@@ -173,7 +174,15 @@ function readConfig() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      const sanitized = sanitizePersistedConfigShape(parsed);
+      if (sanitized.changed) {
+        persistConfigSnapshot(sanitized.config);
+      }
+      if (sanitized.channelStateChanged) {
+        writeClawBoxChannelState(sanitized.channelState);
+      }
+      return sanitized.config;
     }
   } catch (err) {
     console.error('读取配置失败:', err.message);
@@ -181,12 +190,331 @@ function readConfig() {
   return {};
 }
 
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value ?? {}));
+}
+
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readJsonFile(filePath, fallback = {}) {
+  try {
+    if (!fs.existsSync(filePath)) return cloneJson(fallback);
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (err) {
+    console.error(`读取 ${path.basename(filePath)} 失败:`, err.message);
+    return cloneJson(fallback);
+  }
+}
+
+function persistJsonFileSnapshot(filePath, value = {}) {
+  ensureConfigDir();
+  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tempPath, JSON.stringify(value, null, 2), 'utf8');
+  fs.renameSync(tempPath, filePath);
+}
+
+function assignTrimmedString(target, key, value) {
+  if (typeof value !== 'string') return;
+  const normalized = value.trim();
+  if (normalized) target[key] = normalized;
+}
+
+function assignBoolean(target, key, value) {
+  if (value === undefined) return;
+  target[key] = !!value;
+}
+
+function assignFiniteNumber(target, key, value) {
+  if (!Number.isFinite(value)) return;
+  target[key] = value;
+}
+
+function assignArray(target, key, value) {
+  if (!Array.isArray(value) || !value.length) return;
+  target[key] = cloneJson(value);
+}
+
+function assignPlainObject(target, key, value) {
+  if (!isPlainObject(value) || !Object.keys(value).length) return;
+  target[key] = cloneJson(value);
+}
+
+function assignStringOrObject(target, key, value) {
+  if (typeof value === 'string') {
+    assignTrimmedString(target, key, value);
+    return;
+  }
+  assignPlainObject(target, key, value);
+}
+
+function sanitizeClawBoxFeishuUiState(channel = {}) {
+  if (!isPlainObject(channel)) return null;
+
+  const next = {};
+  assignTrimmedString(next, 'displayName', channel.displayName);
+  assignTrimmedString(next, 'setupMode', channel.setupMode);
+  assignTrimmedString(next, 'accessMode', channel.accessMode);
+  assignTrimmedString(next, 'status', channel.status);
+  assignTrimmedString(next, 'pairingStatus', channel.pairingStatus ?? channel.pairing?.status);
+  assignTrimmedString(next, 'configuredAt', channel.configuredAt);
+  assignTrimmedString(next, 'enabledAt', channel.enabledAt);
+  assignTrimmedString(next, 'connectedAt', channel.connectedAt);
+  assignTrimmedString(next, 'lastError', channel.lastError);
+  assignBoolean(next, 'connected', channel.connected);
+  assignPlainObject(next, 'validation', channel.validation);
+  assignPlainObject(next, 'pairing', channel.pairing);
+  assignPlainObject(next, 'automation', channel.automation);
+
+  return Object.keys(next).length ? next : null;
+}
+
+function sanitizeClawBoxChannelStateShape(state = {}) {
+  const next = {};
+  const channels = isPlainObject(state.channels) ? state.channels : {};
+  const sanitizedChannels = {};
+  const feishuState = sanitizeClawBoxFeishuUiState(channels.feishu);
+  if (feishuState) {
+    sanitizedChannels.feishu = feishuState;
+  }
+  if (Object.keys(sanitizedChannels).length) {
+    next.channels = sanitizedChannels;
+  }
+  return next;
+}
+
+function readClawBoxChannelState() {
+  const raw = readJsonFile(CLAWBOX_CHANNEL_STATE_FILE, {});
+  const sanitized = sanitizeClawBoxChannelStateShape(raw);
+  if (JSON.stringify(sanitized) !== JSON.stringify(raw)) {
+    persistJsonFileSnapshot(CLAWBOX_CHANNEL_STATE_FILE, sanitized);
+  }
+  return sanitized;
+}
+
+function writeClawBoxChannelState(state = {}) {
+  const sanitized = sanitizeClawBoxChannelStateShape(state);
+  if (Object.keys(sanitized).length) {
+    persistJsonFileSnapshot(CLAWBOX_CHANNEL_STATE_FILE, sanitized);
+  } else if (fs.existsSync(CLAWBOX_CHANNEL_STATE_FILE)) {
+    fs.rmSync(CLAWBOX_CHANNEL_STATE_FILE, { force: true });
+  }
+}
+
+function getClawBoxChannelUiState(channelKey) {
+  const key = String(channelKey || '').trim();
+  const state = readClawBoxChannelState();
+  const channel = state.channels?.[key];
+  return channel ? cloneJson(channel) : null;
+}
+
+function setClawBoxChannelUiState(channelKey, uiState) {
+  const key = String(channelKey || '').trim();
+  const state = readClawBoxChannelState();
+  const next = cloneJson(state);
+  if (!next.channels) next.channels = {};
+  const sanitized = key === 'feishu' ? sanitizeClawBoxFeishuUiState(uiState) : null;
+  if (sanitized) {
+    next.channels[key] = sanitized;
+  } else {
+    delete next.channels[key];
+  }
+  if (!Object.keys(next.channels).length) {
+    delete next.channels;
+  }
+  writeClawBoxChannelState(next);
+}
+
+function mergeClawBoxChannelUiState(channelKey, channel = {}) {
+  const key = String(channelKey || '').trim();
+  const overlay = getClawBoxChannelUiState(key);
+  if (!overlay) return channel;
+  return {
+    ...channel,
+    ...overlay,
+    validation: overlay.validation ? cloneJson(overlay.validation) : channel.validation,
+    pairing: overlay.pairing ? cloneJson(overlay.pairing) : channel.pairing,
+    automation: overlay.automation ? cloneJson(overlay.automation) : channel.automation
+  };
+}
+
+function buildFeishuChannelUiState(meta, current, payload, configured, nextEnabled, pairingStatus, status, lastError) {
+  return sanitizeClawBoxFeishuUiState({
+    displayName: String(payload.displayName || current.displayName || meta.name).trim() || meta.name,
+    setupMode: payload.setupMode || current.setupMode || meta.defaultSetupMode || 'manual',
+    accessMode: payload.setupMode || current.setupMode || meta.defaultSetupMode || 'manual',
+    connected: pairingStatus === 'paired',
+    status,
+    pairingStatus,
+    configuredAt: configured ? (payload.configuredAt || current.configuredAt || new Date().toISOString()) : '',
+    enabledAt: nextEnabled ? (payload.enabledAt || current.enabledAt || new Date().toISOString()) : '',
+    connectedAt: pairingStatus === 'paired' ? (payload.connectedAt || current.connectedAt || new Date().toISOString()) : '',
+    lastError,
+    validation: {
+      status: payload.validation?.status || (configured ? 'pending' : 'unvalidated'),
+      message: payload.validation?.message || '',
+      updatedAt: payload.validation?.updatedAt || (configured ? new Date().toISOString() : '')
+    },
+    pairing: {
+      status: pairingStatus,
+      code: payload.pairingCode !== undefined ? String(payload.pairingCode || '').trim() : (current.pairing?.code || '')
+    },
+    automation: {
+      appCreated: payload.automation?.appCreated ?? current.automation?.appCreated ?? false,
+      botEnabled: payload.automation?.botEnabled ?? current.automation?.botEnabled ?? false,
+      scopesConfigured: payload.automation?.scopesConfigured ?? current.automation?.scopesConfigured ?? false,
+      eventSubscriptionConfigured: payload.automation?.eventSubscriptionConfigured ?? current.automation?.eventSubscriptionConfigured ?? false,
+      publishReady: payload.automation?.publishReady ?? current.automation?.publishReady ?? false,
+      provider: payload.automation?.provider ?? current.automation?.provider ?? '',
+      lastProvisionedAt: payload.automation?.lastProvisionedAt ?? current.automation?.lastProvisionedAt ?? ''
+    }
+  });
+}
+
+function sanitizePersistedFeishuChannel(channel = {}) {
+  if (!isPlainObject(channel)) return channel;
+
+  const next = {};
+  const streaming = channel.streaming ?? channel.settings?.streaming;
+  assignBoolean(next, 'enabled', channel.enabled);
+  assignTrimmedString(next, 'defaultAccount', channel.defaultAccount);
+  assignStringOrObject(next, 'appId', channel.appId ?? channel.credentials?.appId ?? channel.settings?.appId);
+  assignStringOrObject(next, 'appSecret', channel.appSecret ?? channel.credentials?.appSecret ?? channel.settings?.appSecret);
+  assignStringOrObject(next, 'encryptKey', channel.encryptKey ?? channel.credentials?.encryptKey ?? channel.settings?.encryptKey);
+  assignStringOrObject(next, 'verificationToken', channel.verificationToken ?? channel.credentials?.verificationToken ?? channel.settings?.verificationToken);
+  assignStringOrObject(next, 'domain', channel.domain);
+  assignTrimmedString(next, 'connectionMode', channel.connectionMode);
+  assignTrimmedString(next, 'webhookPath', channel.webhookPath);
+  assignTrimmedString(next, 'webhookHost', channel.webhookHost);
+  assignFiniteNumber(next, 'webhookPort', channel.webhookPort);
+  assignArray(next, 'capabilities', channel.capabilities);
+  assignPlainObject(next, 'markdown', channel.markdown);
+  assignBoolean(next, 'configWrites', channel.configWrites);
+  assignTrimmedString(next, 'dmPolicy', channel.dmPolicy);
+  assignArray(next, 'allowFrom', channel.allowFrom);
+  assignTrimmedString(next, 'groupPolicy', channel.groupPolicy);
+  assignArray(next, 'groupAllowFrom', channel.groupAllowFrom);
+  assignArray(next, 'groupSenderAllowFrom', channel.groupSenderAllowFrom);
+  assignBoolean(next, 'requireMention', channel.requireMention);
+  assignPlainObject(next, 'groups', channel.groups);
+  assignFiniteNumber(next, 'historyLimit', channel.historyLimit);
+  assignFiniteNumber(next, 'dmHistoryLimit', channel.dmHistoryLimit);
+  assignPlainObject(next, 'dms', channel.dms);
+  assignFiniteNumber(next, 'textChunkLimit', channel.textChunkLimit);
+  assignTrimmedString(next, 'chunkMode', channel.chunkMode);
+  assignPlainObject(next, 'blockStreamingCoalesce', channel.blockStreamingCoalesce);
+  assignFiniteNumber(next, 'mediaMaxMb', channel.mediaMaxMb);
+  assignFiniteNumber(next, 'httpTimeoutMs', channel.httpTimeoutMs);
+  assignPlainObject(next, 'heartbeat', channel.heartbeat);
+  assignTrimmedString(next, 'renderMode', channel.renderMode);
+  if (streaming !== undefined) next.streaming = !!streaming;
+  assignPlainObject(next, 'tools', channel.tools);
+  assignPlainObject(next, 'actions', channel.actions);
+  assignTrimmedString(next, 'replyInThread', channel.replyInThread);
+  assignTrimmedString(next, 'reactionNotifications', channel.reactionNotifications);
+  assignBoolean(next, 'typingIndicator', channel.typingIndicator);
+  assignBoolean(next, 'resolveSenderNames', channel.resolveSenderNames);
+  assignTrimmedString(next, 'groupSessionScope', channel.groupSessionScope);
+  assignTrimmedString(next, 'topicSessionMode', channel.topicSessionMode);
+  assignPlainObject(next, 'dynamicAgentCreation', channel.dynamicAgentCreation);
+  assignPlainObject(next, 'accounts', channel.accounts);
+
+  return next;
+}
+
+function sanitizePersistedConfigShape(config = {}) {
+  const next = cloneJson(config);
+  let changed = false;
+  const currentChannelState = readClawBoxChannelState();
+  const nextChannelState = cloneJson(currentChannelState);
+  let channelStateChanged = false;
+
+  if (next.channels && typeof next.channels === 'object' && !Array.isArray(next.channels)) {
+    const currentFeishu = next.channels.feishu;
+    if (isPlainObject(currentFeishu)) {
+      const migratedUiState = sanitizeClawBoxFeishuUiState(currentFeishu);
+      if (migratedUiState) {
+        const previousUiState = nextChannelState.channels?.feishu || null;
+        const mergedUiState = sanitizeClawBoxFeishuUiState({
+          ...(previousUiState || {}),
+          ...migratedUiState,
+          validation: migratedUiState.validation ?? previousUiState?.validation,
+          pairing: migratedUiState.pairing ?? previousUiState?.pairing,
+          automation: migratedUiState.automation ?? previousUiState?.automation
+        });
+        if (!nextChannelState.channels) nextChannelState.channels = {};
+        if (JSON.stringify(mergedUiState) !== JSON.stringify(previousUiState)) {
+          nextChannelState.channels.feishu = mergedUiState;
+          channelStateChanged = true;
+        }
+      }
+      const sanitizedFeishu = sanitizePersistedFeishuChannel(currentFeishu);
+      if (JSON.stringify(sanitizedFeishu) !== JSON.stringify(currentFeishu)) {
+        next.channels.feishu = sanitizedFeishu;
+        changed = true;
+      }
+    }
+  }
+
+  if (nextChannelState.channels && !Object.keys(nextChannelState.channels).length) {
+    delete nextChannelState.channels;
+  }
+
+  return {
+    config: next,
+    changed,
+    channelState: nextChannelState,
+    channelStateChanged
+  };
+}
+
+function persistConfigSnapshot(config = {}) {
+  ensureConfigDir();
+  const tempPath = `${CONFIG_FILE}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tempPath, JSON.stringify(config, null, 2), 'utf8');
+  fs.renameSync(tempPath, CONFIG_FILE);
+}
+
+function preserveGatewayConfig(targetConfig = {}, currentConfig = {}) {
+  const next = cloneJson(targetConfig);
+  const currentGateway = currentConfig?.gateway;
+  if (!currentGateway || typeof currentGateway !== 'object' || Array.isArray(currentGateway)) {
+    return next;
+  }
+
+  const nextGateway = (next.gateway && typeof next.gateway === 'object' && !Array.isArray(next.gateway))
+    ? next.gateway
+    : {};
+  next.gateway = {
+    ...cloneJson(currentGateway),
+    ...nextGateway
+  };
+
+  const currentAuth = currentGateway.auth;
+  const nextAuth = nextGateway.auth;
+  if (currentAuth && typeof currentAuth === 'object' && !Array.isArray(currentAuth)) {
+    next.gateway.auth = {
+      ...cloneJson(currentAuth),
+      ...((nextAuth && typeof nextAuth === 'object' && !Array.isArray(nextAuth)) ? nextAuth : {})
+    };
+  }
+
+  return next;
+}
+
 /**
  * 写入配置文件
  */
 function writeConfig(config) {
   ensureConfigDir();
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+  const currentConfig = readConfig();
+  const preserved = preserveGatewayConfig(config, currentConfig);
+  const sanitized = sanitizePersistedConfigShape(preserved);
+  persistConfigSnapshot(sanitized.config);
+  if (sanitized.channelStateChanged) {
+    writeClawBoxChannelState(sanitized.channelState);
+  }
   return true;
 }
 
@@ -640,14 +968,17 @@ function getLegacyFeishuPairingStatus(channel = {}, hasCredentials = false) {
   if (hasExplicitStatus) return null;
   if (!hasCredentials) return 'unpaired';
 
-  // Legacy OpenClaw Feishu config stores credentials directly on the channel
-  // and does not persist ClawBox pairing metadata. Treat it as connected so
-  // existing paired channels are not downgraded to pending.
-  if (channel.type === 'feishu' || channel.domain === 'feishu' || channel.enabled !== undefined) {
+  if (channel.connected === true) {
     return 'paired';
   }
 
-  return null;
+  const hasPairingCode = !!String(channel.pairing?.code || '').trim();
+  const hasBoundAccounts = !!(channel.accounts && typeof channel.accounts === 'object' && !Array.isArray(channel.accounts) && Object.keys(channel.accounts).length);
+  if (hasPairingCode || hasBoundAccounts) {
+    return 'paired';
+  }
+
+  return channel.enabled === false ? 'unpaired' : 'pending';
 }
 
 function getChannelRuntimeStatus(channelKey, channel = {}, credentials = {}) {
@@ -865,13 +1196,26 @@ function serializeChannel(key, channel = {}, includeSecrets = false) {
   };
 }
 
+function getPersistedChannelConfig(channelKey, includeSecrets = true) {
+  const key = String(channelKey || '').trim();
+  if (!getChannelMeta(key)) return null;
+
+  const config = readConfig();
+  const channels = config.channels || {};
+  const existing = channels[key];
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    return null;
+  }
+
+  return serializeChannel(key, mergeClawBoxChannelUiState(key, existing), includeSecrets);
+}
+
 function getChannelConfig(channelKey) {
   const key = String(channelKey || '').trim();
   if (!getChannelMeta(key)) return null;
-  const config = readConfig();
-  const channels = config.channels || {};
-  const normalized = normalizeChannel(key, channels[key] || {});
-  return serializeChannel(key, normalized, true);
+  const persisted = getPersistedChannelConfig(key, true);
+  if (persisted) return persisted;
+  return serializeChannel(key, {}, true);
 }
 
 function getChannelsConfig() {
@@ -879,7 +1223,7 @@ function getChannelsConfig() {
   const channels = config.channels || {};
 
   return getChannelCatalog().map((item) => {
-    const existing = channels[item.key] || {};
+    const existing = mergeClawBoxChannelUiState(item.key, channels[item.key] || {});
     const normalized = normalizeChannel(item.key, existing);
     return serializeChannel(item.key, normalized, false);
   });
@@ -947,7 +1291,8 @@ function upsertChannelConfig(channelKey, payload = {}) {
 
   const config = readConfig();
   if (!config.channels) config.channels = {};
-  const current = normalizeChannel(key, config.channels[key] || {}) || {};
+  const currentSource = mergeClawBoxChannelUiState(key, config.channels[key] || {});
+  const current = normalizeChannel(key, currentSource) || {};
   const currentCredentials = current.credentials || {};
   const currentSettings = current.settings || {};
   const nextCredentials = Object.fromEntries((meta.credentials || []).map((field) => {
@@ -987,60 +1332,63 @@ function upsertChannelConfig(channelKey, payload = {}) {
   const lastError = payload.lastError !== undefined
     ? String(payload.lastError || '').trim()
     : (status === 'failed' ? (current.lastError || '配置失败') : '');
+  const feishuUiState = key === 'feishu'
+    ? buildFeishuChannelUiState(meta, current, payload, configured, nextEnabled, pairingStatus, status, lastError)
+    : null;
 
-  config.channels[key] = {
-    key,
-    type: key,
-    name: meta.name,
-    displayName: String(payload.displayName || current.displayName || meta.name).trim() || meta.name,
-    enabled: nextEnabled,
-    connected: pairingStatus === 'paired',
-    status,
-    pairingStatus,
-    setupMode: payload.setupMode || current.setupMode || meta.defaultSetupMode || 'manual',
-    accessMode: payload.setupMode || current.setupMode || meta.defaultSetupMode || 'manual',
-    configuredAt: configured ? (payload.configuredAt || current.configuredAt || new Date().toISOString()) : '',
-    enabledAt: nextEnabled ? (payload.enabledAt || current.enabledAt || new Date().toISOString()) : '',
-    connectedAt: pairingStatus === 'paired' ? (payload.connectedAt || current.connectedAt || new Date().toISOString()) : '',
-    lastError,
-    credentials: nextCredentials,
-    settings: {
-      ...nextSettings,
-      ...(key === 'feishu'
-        ? {
-            appId: nextCredentials.appId || '',
-            appSecret: nextCredentials.appSecret || ''
-          }
-        : {})
-    },
-    validation: {
-      status: payload.validation?.status || (configured ? 'pending' : 'unvalidated'),
-      message: payload.validation?.message || '',
-      updatedAt: payload.validation?.updatedAt || (configured ? new Date().toISOString() : '')
-    },
-    pairing: {
-      status: pairingStatus,
-      code: payload.pairingCode !== undefined ? String(payload.pairingCode || '').trim() : (current.pairing?.code || '')
-    },
-    automation: {
-      appCreated: payload.automation?.appCreated ?? current.automation?.appCreated ?? false,
-      botEnabled: payload.automation?.botEnabled ?? current.automation?.botEnabled ?? false,
-      scopesConfigured: payload.automation?.scopesConfigured ?? current.automation?.scopesConfigured ?? false,
-      eventSubscriptionConfigured: payload.automation?.eventSubscriptionConfigured ?? current.automation?.eventSubscriptionConfigured ?? false,
-      publishReady: payload.automation?.publishReady ?? current.automation?.publishReady ?? false,
-      provider: payload.automation?.provider ?? current.automation?.provider ?? '',
-      lastProvisionedAt: payload.automation?.lastProvisionedAt ?? current.automation?.lastProvisionedAt ?? ''
-    }
-  };
-
-  if (key === 'feishu') {
-    config.channels[key].appId = nextCredentials.appId || '';
-    config.channels[key].appSecret = nextCredentials.appSecret || '';
-    config.channels[key].streaming = nextSettings.streaming ?? true;
-  }
+  config.channels[key] = key === 'feishu'
+    ? sanitizePersistedFeishuChannel({
+        ...config.channels[key],
+        enabled: nextEnabled,
+        appId: nextCredentials.appId || '',
+        appSecret: nextCredentials.appSecret || '',
+        verificationToken: nextCredentials.verificationToken || currentSource.verificationToken || '',
+        streaming: nextSettings.streaming ?? true
+      })
+    : {
+        key,
+        type: key,
+        name: meta.name,
+        displayName: String(payload.displayName || current.displayName || meta.name).trim() || meta.name,
+        enabled: nextEnabled,
+        connected: pairingStatus === 'paired',
+        status,
+        pairingStatus,
+        setupMode: payload.setupMode || current.setupMode || meta.defaultSetupMode || 'manual',
+        accessMode: payload.setupMode || current.setupMode || meta.defaultSetupMode || 'manual',
+        configuredAt: configured ? (payload.configuredAt || current.configuredAt || new Date().toISOString()) : '',
+        enabledAt: nextEnabled ? (payload.enabledAt || current.enabledAt || new Date().toISOString()) : '',
+        connectedAt: pairingStatus === 'paired' ? (payload.connectedAt || current.connectedAt || new Date().toISOString()) : '',
+        lastError,
+        credentials: nextCredentials,
+        settings: {
+          ...nextSettings
+        },
+        validation: {
+          status: payload.validation?.status || (configured ? 'pending' : 'unvalidated'),
+          message: payload.validation?.message || '',
+          updatedAt: payload.validation?.updatedAt || (configured ? new Date().toISOString() : '')
+        },
+        pairing: {
+          status: pairingStatus,
+          code: payload.pairingCode !== undefined ? String(payload.pairingCode || '').trim() : (current.pairing?.code || '')
+        },
+        automation: {
+          appCreated: payload.automation?.appCreated ?? current.automation?.appCreated ?? false,
+          botEnabled: payload.automation?.botEnabled ?? current.automation?.botEnabled ?? false,
+          scopesConfigured: payload.automation?.scopesConfigured ?? current.automation?.scopesConfigured ?? false,
+          eventSubscriptionConfigured: payload.automation?.eventSubscriptionConfigured ?? current.automation?.eventSubscriptionConfigured ?? false,
+          publishReady: payload.automation?.publishReady ?? current.automation?.publishReady ?? false,
+          provider: payload.automation?.provider ?? current.automation?.provider ?? '',
+          lastProvisionedAt: payload.automation?.lastProvisionedAt ?? current.automation?.lastProvisionedAt ?? ''
+        }
+      };
 
   writeConfig(config);
-  return serializeChannel(key, config.channels[key], false);
+  if (key === 'feishu') {
+    setClawBoxChannelUiState(key, feishuUiState);
+  }
+  return serializeChannel(key, mergeClawBoxChannelUiState(key, config.channels[key]), false);
 }
 
 function removeChannelConfig(channelKey) {
@@ -1049,6 +1397,7 @@ function removeChannelConfig(channelKey) {
   if (!config.channels) config.channels = {};
   delete config.channels[key];
   writeConfig(config);
+  setClawBoxChannelUiState(key, null);
   return { success: true, key };
 }
 
@@ -1191,6 +1540,7 @@ function switchModelById(fullModelId) {
 module.exports = {
   CONFIG_DIR,
   CONFIG_FILE,
+  CLAWBOX_CHANNEL_STATE_FILE,
   readConfig,
   writeConfig,
   getModelConfig,
@@ -1200,6 +1550,7 @@ module.exports = {
   deleteModel,
   getChannelCatalog,
   getChannelConfig,
+  getPersistedChannelConfig,
   getChannelsConfig,
   getChannelsState,
   normalizeManualChannelPayload,
@@ -1208,5 +1559,6 @@ module.exports = {
   getFeishuConfig,
   updateFeishuConfig,
   getConfigSummary,
-  getInstalledModels
+  getInstalledModels,
+  getDefaultBaseUrl
 };

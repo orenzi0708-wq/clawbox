@@ -1,0 +1,33 @@
+{
+  "task_id": "TASK-9003",
+  "task_type": "process-improvement",
+  "target": {
+    "area": "task-handoff",
+    "summary": "为任务执行包补齐 handoff 模板",
+    "platform": [
+      "linux"
+    ]
+  },
+  "files_touched": [],
+  "checks_run": [],
+  "lint": {
+    "status": "not_configured",
+    "notes": "项目当前无统一 lint 脚本"
+  },
+  "typecheck": {
+    "status": "not_applicable",
+    "notes": "当前主逻辑为 JS，未配置 TypeScript typecheck"
+  },
+  "related_regression_checks": [],
+  "smoke_checks": [],
+  "reviewer_result": {
+    "status": "pending_review",
+    "summary": "待 reviewer / 主 Agent 更新",
+    "reviewer": ""
+  },
+  "risk_level": "medium",
+  "status_summary": "待补充",
+  "open_issues": [],
+  "next_action": "待补充",
+  "generated_at": "2026-04-05T03:58:08.881Z"
+}

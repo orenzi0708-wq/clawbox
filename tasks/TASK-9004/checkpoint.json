@@ -1,0 +1,14 @@
+{
+  "task_id": "TASK-9004",
+  "phase": "planning",
+  "status": "not_started",
+  "summary": "为 bugfix 工作流建立先功能验证后打包验证的两阶段流程",
+  "current_focus": "为 bugfix 工作流建立先功能验证后打包验证的两阶段流程",
+  "completed_steps": [],
+  "next_steps": [],
+  "blockers": [],
+  "artifacts": [],
+  "related_runbooks": [],
+  "last_updated_by": "main-agent",
+  "last_updated_at": "2026-04-05T04:15:43.153Z"
+}

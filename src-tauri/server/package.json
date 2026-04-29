@@ -1,6 +1,6 @@
 {
   "name": "clawbox",
-  "version": "0.5.1",
+  "version": "0.5.26",
   "description": "ClawBox - 一键部署和管理 OpenClaw 的图形化工具",
   "main": "src/server.js",
   "bin": {
@@ -8,7 +8,9 @@
   },
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node src/server.js --dev"
+    "dev": "node src/server.js --dev",
+    "task:init-validation": "node scripts/init-validation.js",
+    "task:review-guard": "node scripts/task-review-guard.js"
   },
   "pkg": {
     "scripts": [

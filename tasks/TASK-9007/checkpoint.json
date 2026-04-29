@@ -1,0 +1,39 @@
+{
+  "task_id": "TASK-9007",
+  "phase": "planning",
+  "status": "queued",
+  "summary": "验证五个闭环补丁",
+  "current_focus": "验证五个闭环补丁",
+  "done_when": [
+    "目标问题在当前验证关卡内确认解决",
+    "validation.json 已更新且状态清晰",
+    "reviewer verdict 不为 needs_changes / blocked"
+  ],
+  "completed_steps": [],
+  "next_steps": [
+    "先补最小复现或明确 smoke 步骤",
+    "完成代码修改后先跑功能验证与相邻回归检查",
+    "功能关通过后再考虑 packaging_validation"
+  ],
+  "blockers": [],
+  "artifacts": [],
+  "related_runbooks": [
+    "docs/RUNBOOKS/gateway-restart.md",
+    "docs/RUNBOOKS/status-detection.md",
+    "docs/RUNBOOKS/dashboard-url-detection.md",
+    "docs/RUNBOOKS/tauri-server-sync.md"
+  ],
+  "rollback_anchor": {
+    "baseline_commit": "",
+    "rollback_target": ""
+  },
+  "blocked": {
+    "is_blocked": false,
+    "blocked_reason": "",
+    "unblock_action": "",
+    "owner": "",
+    "reentry_condition": ""
+  },
+  "last_updated_by": "main-agent",
+  "last_updated_at": "2026-04-05T13:11:24.803Z"
+}

@@ -4,7 +4,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -31,8 +31,8 @@ fn detect_platform() -> &'static str {
     { "linux" }
 }
 
-fn node_version_string() -> Option<String> {
-    Command::new("node")
+fn node_version_string(command: &Path) -> Option<String> {
+    Command::new(command)
         .arg("--version")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -77,38 +77,94 @@ fn which_cmd(cmd: &str) -> String {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or(cmd)
+                .trim()
+                .to_string()
+        })
         .unwrap_or_else(|| cmd.to_string())
 }
 
-/// Find node binary: system PATH > bundled in app data
-fn find_node(app: &tauri::AppHandle) -> Option<(String, String)> {
-    // 1. System node
-    if let Some(ver) = node_version_string() {
-        let path = which_cmd("node");
-        println!("Found system node: {} at {}", ver, path);
-        return Some((path, ver));
+fn windows_node_candidate_paths() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for key in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+        if let Some(value) = std::env::var_os(key) {
+            let base = PathBuf::from(value);
+            if key == "LOCALAPPDATA" {
+                candidates.push(base.join("Programs").join("nodejs").join("node.exe"));
+                candidates.push(base.join("nodejs").join("node.exe"));
+            } else {
+                candidates.push(base.join("nodejs").join("node.exe"));
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE") {
+        let home = PathBuf::from(home);
+        candidates.push(home.join("scoop").join("apps").join("nodejs-lts").join("current").join("node.exe"));
+        candidates.push(home.join("scoop").join("apps").join("nodejs").join("current").join("node.exe"));
+    }
+    candidates
+}
+
+fn find_node_binary_in_dir(root: &Path) -> Option<PathBuf> {
+    let direct = if detect_platform() == "windows" {
+        root.join("node.exe")
+    } else {
+        root.join("bin").join("node")
+    };
+    if direct.exists() {
+        return Some(direct);
     }
 
-    // 2. Bundled node in app data dir
+    let nested = if detect_platform() == "windows" {
+        fs::read_dir(root)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path().join("node.exe"))
+            .find(|path| path.exists())
+    } else {
+        fs::read_dir(root)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path().join("bin").join("node"))
+            .find(|path| path.exists())
+    };
+
+    nested
+}
+
+fn verify_node_candidate(candidate: &Path) -> Option<(String, String)> {
+    let version = node_version_string(candidate)?;
+    Some((candidate.to_string_lossy().to_string(), version))
+}
+
+/// Find node binary: PATH > well-known install dirs > bundled app data
+fn find_node(app: &tauri::AppHandle) -> Option<(String, String)> {
+    let path_candidate = PathBuf::from(which_cmd("node"));
+    if path_candidate.exists() {
+        if let Some((path, version)) = verify_node_candidate(&path_candidate) {
+            println!("Found PATH node: {} at {}", version, path);
+            return Some((path, version));
+        }
+    }
+
+    if detect_platform() == "windows" {
+        for candidate in windows_node_candidate_paths() {
+            if let Some((path, version)) = verify_node_candidate(&candidate) {
+                println!("Found Windows node: {} at {}", version, path);
+                return Some((path, version));
+            }
+        }
+    }
+
     if let Some(node_dir) = bundled_node_dir(app) {
-        let node_bin = if detect_platform() == "windows" {
-            node_dir.join("node.exe")
-        } else {
-            node_dir.join("bin").join("node")
-        };
-        if node_bin.exists() {
-            // Verify it works
-            let ver = Command::new(&node_bin)
-                .arg("--version")
-                .stdout(Stdio::piped())
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-            if let Some(v) = ver {
-                println!("Found bundled node: {} at {}", v, node_bin.display());
-                return Some((node_bin.to_string_lossy().to_string(), v));
+        if let Some(node_bin) = find_node_binary_in_dir(&node_dir) {
+            if let Some((path, version)) = verify_node_candidate(&node_bin) {
+                println!("Found bundled node: {} at {}", version, path);
+                return Some((path, version));
             }
         }
     }
@@ -121,15 +177,10 @@ fn download_node(app: &tauri::AppHandle) -> Result<String, String> {
     let url = node_download_url();
     let node_dir = bundled_node_dir(app).ok_or("Failed to get app data dir")?;
 
-    let node_bin = if detect_platform() == "windows" {
-        node_dir.join("node.exe")
-    } else {
-        node_dir.join("bin").join("node")
-    };
-
-    // Skip if already exists
-    if node_bin.exists() {
-        return Ok(node_bin.to_string_lossy().to_string());
+    if let Some(existing) = find_node_binary_in_dir(&node_dir) {
+        if existing.exists() {
+            return Ok(existing.to_string_lossy().to_string());
+        }
     }
 
     println!("Downloading Node.js from {}", url);
@@ -211,6 +262,9 @@ fn download_node(app: &tauri::AppHandle) -> Result<String, String> {
     // Cleanup archive
     let _ = fs::remove_file(&archive_path);
 
+    let node_bin = find_node_binary_in_dir(&node_dir)
+        .ok_or_else(|| format!("Node archive extracted but executable was not found under {}", node_dir.display()))?;
+
     // Make executable
     #[cfg(unix)]
     {
@@ -224,41 +278,66 @@ fn download_node(app: &tauri::AppHandle) -> Result<String, String> {
     Ok(node_bin.to_string_lossy().to_string())
 }
 
-fn find_server_js(app: &tauri::AppHandle) -> Option<PathBuf> {
+fn find_server_root(app: &tauri::AppHandle) -> Option<PathBuf> {
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let bundled = resource_dir.join("server").join("src").join("server.js");
-        if bundled.exists() {
+        let bundled = resource_dir.join("server");
+        if bundled.join("src").join("server.js").exists() {
             return Some(bundled);
         }
     }
     if let Ok(cwd) = std::env::current_dir() {
-        let dev_path = cwd.join("src").join("server.js");
-        if dev_path.exists() {
-            return Some(dev_path);
+        let dev_root = cwd.join("src-tauri").join("server");
+        if dev_root.join("src").join("server.js").exists() {
+            return Some(dev_root);
         }
-        let dev_path2 = cwd.join("..").join("src").join("server.js");
-        if dev_path2.exists() {
-            return Some(dev_path2.canonicalize().unwrap_or(dev_path2));
+
+        let project_root = cwd.clone();
+        if project_root.join("src").join("server.js").exists() {
+            return Some(project_root);
+        }
+
+        let parent_root = cwd.join("..");
+        if parent_root.join("src").join("server.js").exists() {
+            return Some(parent_root.canonicalize().unwrap_or(parent_root));
         }
     }
     None
 }
 
-fn start_server(app: &tauri::AppHandle, node_cmd: &str) -> Result<Child, String> {
-    let server_path = find_server_js(app)
-        .ok_or_else(|| "Could not find server.js.".to_string())?;
+fn validate_server_root(server_root: &Path) -> Result<PathBuf, String> {
+    let required = [
+        server_root.join("src").join("server.js"),
+        server_root.join("src").join("config.js"),
+        server_root.join("src").join("installer.js"),
+        server_root.join("public").join("index.html"),
+    ];
 
-    let work_dir = server_path
-        .parent().and_then(|p| p.parent()).and_then(|p| p.parent())
-        .ok_or("Failed to determine working directory")?
-        .to_path_buf();
+    let missing: Vec<String> = required
+        .iter()
+        .filter(|path| !path.exists())
+        .map(|path| path.display().to_string())
+        .collect();
+
+    if !missing.is_empty() {
+        return Err(format!("Missing server resources: {}", missing.join(", ")));
+    }
+
+    Ok(server_root.join("src").join("server.js"))
+}
+
+fn start_server(app: &tauri::AppHandle, node_cmd: &str) -> Result<Child, String> {
+    let server_root = find_server_root(app)
+        .ok_or_else(|| "Could not find bundled server resources.".to_string())?;
+    let server_path = validate_server_root(&server_root)?;
 
     let child = Command::new(node_cmd)
         .arg(&server_path)
-        .current_dir(&work_dir)
+        .current_dir(&server_root)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("PORT", "3456")
+        .env("HOST", "127.0.0.1")
+        .env("CLAWBOX_DESKTOP", "1")
         .spawn()
         .map_err(|e| format!("Failed to start server: {}", e))?;
 

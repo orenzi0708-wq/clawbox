@@ -1,0 +1,37 @@
+{
+  "task_id": "TASK-9002",
+  "phase": "handoff",
+  "status": "ready_for_review",
+  "summary": "已为任务目录补齐 checkpoint 与 rollback 的最小执行包结构，并把初始化脚本扩展为一次性生成任务骨架",
+  "current_focus": "由 reviewer / 主 Agent 确认模板字段与当前项目协作方式一致",
+  "completed_steps": [
+    "新增 task-execution-pack runbook",
+    "新增 checkpoint.json 模板",
+    "新增 rollback.md 模板",
+    "新增 task README 模板",
+    "扩展 init-validation 脚本，使其初始化整个任务执行包",
+    "完成 TASK-9002 样例任务目录生成 smoke check"
+  ],
+  "next_steps": [
+    "reviewer 检查 checkpoint / rollback / validation 三者职责是否清晰",
+    "后续新任务按 TASK-xxxx 执行包骨架启动",
+    "必要时再补一个 handoff 模板，但本轮先不加重"
+  ],
+  "blockers": [],
+  "artifacts": [
+    "docs/RUNBOOKS/task-execution-pack.md",
+    "tasks/_templates/checkpoint.json.template",
+    "tasks/_templates/rollback.md.template",
+    "tasks/_templates/task.README.template.md",
+    "scripts/init-validation.js",
+    "tasks/TASK-9002/checkpoint.json",
+    "tasks/TASK-9002/rollback.md",
+    "tasks/TASK-9002/validation.json"
+  ],
+  "related_runbooks": [
+    "docs/RUNBOOKS/task-execution-pack.md",
+    "docs/RUNBOOKS/task-validation.md"
+  ],
+  "last_updated_by": "main-agent",
+  "last_updated_at": "2026-04-05T11:47:30+08:00"
+}

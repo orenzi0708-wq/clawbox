@@ -220,6 +220,32 @@ body::before {
   text-transform: uppercase;
 }
 
+.status-item .label.label-with-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.status-refresh-btn {
+  border: 1px solid rgba(145, 184, 238, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.status-refresh-btn:hover {
+  border-color: rgba(145, 184, 238, 0.4);
+  background: rgba(145, 184, 238, 0.08);
+  color: var(--text-primary);
+}
+
 .status-item .value {
   font-size: 14px;
   font-weight: 700;
@@ -2250,4 +2276,56 @@ body::before {
   .footer {
     justify-content: stretch;
   }
+}
+
+.tool-report-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin: 12px 0 14px;
+}
+
+.tool-report-summary-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(138, 166, 205, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.tool-report-summary-row strong {
+  color: var(--text);
+}
+
+.tool-report-block + .tool-report-block {
+  margin-top: 12px;
+}
+
+.tool-report-title {
+  margin-bottom: 8px;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tool-report-list {
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.tool-report-list li + li {
+  margin-top: 6px;
+}
+
+.tool-report-log {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-muted);
 }

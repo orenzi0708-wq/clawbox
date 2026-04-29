@@ -1,0 +1,168 @@
+{
+  "gateway-restart": {
+    "done_when_templates": [
+      "Gateway restart 主流程在功能验证层面确认修复",
+      "status-detection 相关回归检查已执行并结论明确",
+      "dashboard-url-detection 相关回归检查已执行并结论明确",
+      "reviewer verdict 不为 needs_changes / blocked",
+      "若 packaging_validation 未开始，已明确标记 pending_reason"
+    ],
+    "related_runbooks": [
+      "docs/RUNBOOKS/gateway-restart.md",
+      "docs/RUNBOOKS/status-detection.md",
+      "docs/RUNBOOKS/dashboard-url-detection.md",
+      "docs/RUNBOOKS/tauri-server-sync.md"
+    ],
+    "feature_validation": {
+      "regression_checks": [
+        {
+          "name": "status-detection",
+          "result": "pending",
+          "notes": "检查 gatewayReady / gatewayRunning 判定是否被带坏"
+        },
+        {
+          "name": "dashboard-url-detection",
+          "result": "pending",
+          "notes": "检查 Dashboard URL / port / token 探测链路"
+        },
+        {
+          "name": "tauri-server-sync",
+          "result": "pending",
+          "notes": "检查 src/* 与 src-tauri/server/src/* 是否同步"
+        }
+      ],
+      "smoke_checks": [
+        {
+          "name": "gateway-restart-flow",
+          "result": "pending",
+          "environment": "linux-dev",
+          "notes": "开发态验证 restart 流程与相邻功能"
+        }
+      ]
+    },
+    "next_steps": [
+      "先补最小复现或明确 smoke 步骤",
+      "完成代码修改后先跑功能验证与相邻回归检查",
+      "功能关通过后再考虑 packaging_validation"
+    ]
+  },
+  "dashboard-url-detection": {
+    "done_when_templates": [
+      "Dashboard URL 探测逻辑在功能验证层面确认修复",
+      "Gateway running 与 Dashboard URL ready 已明确区分验证",
+      "reviewer verdict 不为 needs_changes / blocked",
+      "若 packaging_validation 未开始，已明确标记 pending_reason"
+    ],
+    "related_runbooks": [
+      "docs/RUNBOOKS/dashboard-url-detection.md",
+      "docs/RUNBOOKS/status-detection.md",
+      "docs/RUNBOOKS/gateway-restart.md"
+    ],
+    "feature_validation": {
+      "regression_checks": [
+        {
+          "name": "gateway-status-json-deep",
+          "result": "pending",
+          "notes": "检查 --json / --deep 输出兼容性"
+        },
+        {
+          "name": "gateway-running-vs-dashboard-url",
+          "result": "pending",
+          "notes": "避免把 Gateway running 错当 Dashboard URL ready"
+        }
+      ],
+      "smoke_checks": [
+        {
+          "name": "open-dashboard-button",
+          "result": "pending",
+          "environment": "linux-dev",
+          "notes": "检查按钮能否拿到 URL 或明确报错"
+        }
+      ]
+    },
+    "next_steps": [
+      "先保存 status --json / --deep 原始输出样例",
+      "修改解析逻辑后先验证开发态行为",
+      "确认相邻 Gateway 逻辑未被带坏"
+    ]
+  },
+  "install-openclaw": {
+    "done_when_templates": [
+      "安装主流程在功能验证层面确认符合 spec",
+      "安装后 verify / status / dashboard 相关检查已执行并结论明确",
+      "reviewer verdict 不为 needs_changes / blocked",
+      "若 packaging_validation 未开始，已明确标记 pending_reason"
+    ],
+    "related_runbooks": [
+      "docs/RUNBOOKS/install-openclaw.md",
+      "docs/RUNBOOKS/preinstall-cleanup-and-repair.md",
+      "docs/RUNBOOKS/status-detection.md"
+    ],
+    "feature_validation": {
+      "regression_checks": [
+        {
+          "name": "preinstall-cleanup",
+          "result": "pending",
+          "notes": "检查安装前清场 / 修复环境口径是否被带坏"
+        },
+        {
+          "name": "post-install-status-refresh",
+          "result": "pending",
+          "notes": "检查安装后状态是否正确刷新"
+        }
+      ],
+      "smoke_checks": [
+        {
+          "name": "install-flow-dev-check",
+          "result": "pending",
+          "environment": "linux-dev",
+          "notes": "开发环境验证安装流程阶段提示与 verify 逻辑"
+        }
+      ]
+    },
+    "next_steps": [
+      "先确认 spec 中的安装目标和边界",
+      "优先验证安装后 verify / status / dashboard 口径",
+      "不要先把打包安装包当默认第一验证方式"
+    ]
+  },
+  "preinstall-cleanup": {
+    "done_when_templates": [
+      "清场/修复环境逻辑在功能验证层面确认符合 spec",
+      "ClawHub 不误删与 EBUSY 提示质量相关检查已执行并结论明确",
+      "reviewer verdict 不为 needs_changes / blocked",
+      "若 packaging_validation 未开始，已明确标记 pending_reason"
+    ],
+    "related_runbooks": [
+      "docs/RUNBOOKS/preinstall-cleanup-and-repair.md",
+      "docs/RUNBOOKS/install-openclaw.md"
+    ],
+    "feature_validation": {
+      "regression_checks": [
+        {
+          "name": "clawhub-not-removed",
+          "result": "pending",
+          "notes": "检查 ClawHub 仍以扫描优先，不被误删"
+        },
+        {
+          "name": "ebusy-hint-quality",
+          "result": "pending",
+          "notes": "检查 EBUSY / residue 提示是否仍准确"
+        }
+      ],
+      "smoke_checks": [
+        {
+          "name": "repair-environment-button",
+          "result": "pending",
+          "environment": "linux-dev",
+          "notes": "检查修复环境入口与报告输出"
+        }
+      ]
+    },
+    "next_steps": [
+      "先锁定当前删除边界，不扩大清理范围",
+      "修改后优先验证报告质量与误删风险",
+      "功能关通过后再考虑是否需要测试包验证"
+    ]
+  }
+}

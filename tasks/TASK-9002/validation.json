@@ -1,0 +1,80 @@
+{
+  "task_id": "TASK-9002",
+  "task_type": "process-improvement",
+  "target": {
+    "area": "task-execution-pack",
+    "summary": "为当前项目补齐任务级执行包，重点定义 checkpoint 与 rollback 机制",
+    "platform": [
+      "linux",
+      "windows"
+    ]
+  },
+  "files_touched": [
+    "docs/RUNBOOKS/task-execution-pack.md",
+    "docs/RUNBOOKS/task-validation.md",
+    "scripts/init-validation.js",
+    "tasks/_templates/checkpoint.json.template",
+    "tasks/_templates/rollback.md.template",
+    "tasks/_templates/task.README.template.md",
+    "tasks/TASK-9002/checkpoint.json",
+    "tasks/TASK-9002/rollback.md",
+    "tasks/TASK-9002/validation.json"
+  ],
+  "checks_run": [
+    {
+      "name": "node-check-init-validation-script",
+      "kind": "syntax",
+      "command": "node --check scripts/init-validation.js",
+      "result": "passed",
+      "notes": "扩展后的初始化脚本语法通过"
+    },
+    {
+      "name": "task-pack-init-smoke",
+      "kind": "smoke",
+      "command": "npm run task:init-validation -- TASK-9002 --type bugfix --area task-execution-pack --summary \"为任务目录补齐 checkpoint 与 rollback 执行包\" --platform linux,windows --runbooks docs/RUNBOOKS/task-execution-pack.md,docs/RUNBOOKS/task-validation.md",
+      "result": "passed",
+      "notes": "已成功生成 README.md / checkpoint.json / rollback.md / validation.json"
+    }
+  ],
+  "lint": {
+    "status": "not_configured",
+    "notes": "项目当前无统一 lint 脚本"
+  },
+  "typecheck": {
+    "status": "not_applicable",
+    "notes": "当前主逻辑为 JS，未配置 TypeScript typecheck"
+  },
+  "related_regression_checks": [
+    {
+      "name": "task-validation-compatibility",
+      "result": "passed",
+      "notes": "checkpoint / rollback 已与现有 validation 机制配套"
+    },
+    {
+      "name": "task-truth-read-order",
+      "result": "passed",
+      "notes": "新的任务执行包结构兼容既有“任务真相优先”读取顺序"
+    }
+  ],
+  "smoke_checks": [
+    {
+      "name": "task-directory-skeleton",
+      "result": "passed",
+      "environment": "linux",
+      "notes": "任务目录骨架已可一键初始化"
+    }
+  ],
+  "reviewer_result": {
+    "status": "approved",
+    "summary": "checkpoint 与 rollback 机制已以最小可用方式落地，未引入重型任务系统",
+    "reviewer": "main-agent"
+  },
+  "risk_level": "low",
+  "status_summary": "任务级执行包已建立，可支持续接、回退与交接",
+  "open_issues": [
+    "当前 checkpoint / rollback 仍主要靠人工维护，暂无自动更新机制",
+    "handoff 模板尚未单独补充，但当前可先按需手写"
+  ],
+  "next_action": "后续新任务统一通过 task:init-validation 初始化任务目录，并在执行过程中持续更新 checkpoint / rollback / validation",
+  "generated_at": "2026-04-05T11:48:10+08:00"
+}

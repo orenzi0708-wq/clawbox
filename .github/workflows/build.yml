@@ -64,13 +64,7 @@ jobs:
             set -e
             rustup target add x86_64-unknown-linux-gnu
             # Prepare server resources
-            mkdir -p src-tauri/server/src src-tauri/server/public src-tauri/server/node_modules
-            cp src/server.js src-tauri/server/src/
-            cp src/config.js src-tauri/server/src/
-            cp src/installer.js src-tauri/server/src/
-            cp -r public/. src-tauri/server/public/
-            cp package.json src-tauri/server/
-            cd src-tauri/server && npm install --omit=dev --ignore-scripts && cd ../..
+            node scripts/prepare-tauri-server.js --install
             # Build
             cd src-tauri && cargo install tauri-cli && cargo tauri build --target x86_64-unknown-linux-gnu --bundles deb,rpm
           '
@@ -82,13 +76,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
         run: |
           set -e
-          mkdir -p src-tauri/server/src src-tauri/server/public src-tauri/server/node_modules
-          cp src/server.js src-tauri/server/src/
-          cp src/config.js src-tauri/server/src/
-          cp src/installer.js src-tauri/server/src/
-          cp -r public/. src-tauri/server/public/
-          cp package.json src-tauri/server/
-          cd src-tauri/server && npm install --omit=dev --ignore-scripts && cd ../..
+          node scripts/prepare-tauri-server.js --install
           if [ "$RUNNER_OS" = "macOS" ]; then
             TAURI_TARGETS="dmg"
           else

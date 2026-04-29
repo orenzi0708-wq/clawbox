@@ -1,0 +1,79 @@
+{
+  "task_id": "TASK-9005",
+  "task_type": "bugfix",
+  "target": {
+    "area": "gateway-restart",
+    "summary": "验证 bugfix area 预填骨架",
+    "platform": [
+      "linux",
+      "windows"
+    ]
+  },
+  "files_touched": [],
+  "checks_run": [],
+  "lint": {
+    "status": "not_configured",
+    "notes": "项目当前无统一 lint 脚本"
+  },
+  "typecheck": {
+    "status": "not_applicable",
+    "notes": "当前主逻辑为 JS，未配置 TypeScript typecheck"
+  },
+  "feature_validation": {
+    "status": "pending",
+    "checks_run": [],
+    "regression_checks": [
+      {
+        "name": "status-detection",
+        "result": "pending",
+        "notes": "检查 gatewayReady / gatewayRunning 判定是否被带坏"
+      },
+      {
+        "name": "dashboard-url-detection",
+        "result": "pending",
+        "notes": "检查 Dashboard URL / port / token 探测链路"
+      },
+      {
+        "name": "tauri-server-sync",
+        "result": "pending",
+        "notes": "检查 src/* 与 src-tauri/server/src/* 是否同步"
+      }
+    ],
+    "smoke_checks": [
+      {
+        "name": "gateway-restart-flow",
+        "result": "pending",
+        "environment": "linux-dev",
+        "notes": "开发态验证 restart 流程与相邻功能"
+      }
+    ]
+  },
+  "packaging_validation": {
+    "status": "pending",
+    "platforms": {
+      "linux": {
+        "status": "pending",
+        "notes": "待进入打包验证阶段"
+      },
+      "windows": {
+        "status": "pending",
+        "notes": "后续真机构建/安装验证"
+      },
+      "macos": {
+        "status": "pending",
+        "notes": "后续人工或发布前验证"
+      }
+    },
+    "pending_reason": "当前按先功能验证、后打包验证策略执行"
+  },
+  "reviewer_result": {
+    "status": "pending_review",
+    "summary": "待 reviewer / 主 Agent 更新",
+    "reviewer": ""
+  },
+  "risk_level": "medium",
+  "status_summary": "待补充",
+  "open_issues": [],
+  "next_action": "待补充",
+  "generated_at": "2026-04-05T04:19:13.490Z"
+}

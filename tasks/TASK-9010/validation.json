@@ -1,0 +1,176 @@
+{
+  "task_id": "TASK-9010",
+  "task_type": "bugfix",
+  "target": {
+    "area": "gateway-restart",
+    "summary": "Windows Gateway restart / status detection / dashboard URL 收口实战任务",
+    "platform": [
+      "linux",
+      "windows"
+    ]
+  },
+  "files_touched": [
+    "src/server.js",
+    "src/installer.js",
+    "src-tauri/server/src/server.js",
+    "src-tauri/server/src/installer.js",
+    "src-tauri/server/public/js/app.js",
+    "src-tauri/server/package.json",
+    "scripts/smoke-gateway-chain.js",
+    "tasks/TASK-9010/README.md",
+    "tasks/TASK-9010/checkpoint.json",
+    "tasks/TASK-9010/validation.json",
+    "tasks/TASK-9010/rollback.md",
+    "tasks/TASK-9010/handoff.md"
+  ],
+  "checks_run": [
+    "node --check src/server.js",
+    "node --check src/installer.js",
+    "node --check public/js/app.js",
+    "node --check scripts/smoke-gateway-chain.js",
+    "node scripts/smoke-gateway-chain.js",
+    "timeout 15s node -e \"const {inspectOpenClawState}=require('./src/installer'); console.log(JSON.stringify(inspectOpenClawState(), null, 2));\"",
+    "npm run prepare:tauri-server",
+    "node --check src-tauri/server/src/server.js",
+    "node --check src-tauri/server/src/installer.js",
+    "node --check src-tauri/server/public/js/app.js",
+    "npm run task:review-guard -- TASK-9010"
+  ],
+  "lint": {
+    "status": "not_configured",
+    "notes": "项目当前无统一 lint 脚本"
+  },
+  "typecheck": {
+    "status": "not_applicable",
+    "notes": "当前主逻辑为 JS，未配置 TypeScript typecheck"
+  },
+  "feature_validation": {
+    "status": "passed",
+    "checks_run": [
+      {
+        "name": "gateway-chain-smoke-script",
+        "result": "passed",
+        "environment": "linux-dev",
+        "notes": "scripts/smoke-gateway-chain.js 覆盖 status running 判定、防止 JSON payload 中 dashboard URL token 文本触发误判、以及 dashboard URL/port/token fallback 解析。"
+      },
+      {
+        "name": "inspect-openclaw-state-linux",
+        "result": "passed",
+        "environment": "linux-dev",
+        "notes": "当前环境 inspectOpenClawState() 返回 gatewayReady=false、gatewayRunning=false；未出现因 CLI stderr/异常文本导致的误报。"
+      },
+      {
+        "name": "live-api-smoke",
+        "result": "blocked",
+        "environment": "linux-sandbox",
+        "notes": "当前沙箱 listen 127.0.0.1:3456 返回 EPERM，无法在本机直接拉起服务做 API 级 smoke。该缺口不否决本轮功能关，但需在后续 Windows 真机/真实环境补。"
+      }
+    ],
+    "regression_checks": [
+      {
+        "name": "status-detection",
+        "result": "passed",
+        "notes": "server 侧 /api/tools/openclaw-dashboard 在 JSON payload 分支的 running 判定已改为复用 installer.isGatewayStatusRunning()；通过 smoke 脚本验证 rpc.ok / service.loaded+runtime.status 与 dashboard URL token false-positive case。"
+      },
+      {
+        "name": "dashboard-url-detection",
+        "result": "passed",
+        "notes": "通过 smoke 脚本覆盖 JSON URL 解析、deep text URL/port/token 解析和 port+token fallback URL 组装。"
+      },
+      {
+        "name": "tauri-server-sync",
+        "result": "passed",
+        "notes": "已执行 npm run prepare:tauri-server；并通过 node --check 验证 src-tauri/server/src/server.js、installer.js 与 public/js/app.js。"
+      }
+    ],
+    "smoke_checks": [
+      {
+        "name": "gateway-restart-adjacent-logic",
+        "result": "passed",
+        "environment": "linux-dev",
+        "notes": "本轮先锁住 restart 相邻的状态/URL 判定逻辑，重点是 dashboard/status 证据层与实现一致；不把 Linux 结果写成 Windows recover 已通过。"
+      },
+      {
+        "name": "gateway-restart-windows-recover",
+        "result": "pending",
+        "environment": "windows-machine",
+        "notes": "仍需 Windows 真机执行 recoverWindowsGateway() 实流 smoke：inspect → stop → wait port free → start → wait healthy。"
+      }
+    ]
+  },
+  "packaging_validation": {
+    "status": "pending",
+    "platforms": {
+      "linux": {
+        "status": "pending",
+        "notes": "当前实战任务默认优先走功能验证关，不先做打包验证"
+      },
+      "windows": {
+        "status": "pending",
+        "notes": "后续 Windows 真机构建 / 安装验证为第二阶段关卡"
+      },
+      "macos": {
+        "status": "pending",
+        "notes": "当前任务不以 macOS 为默认阻塞项"
+      }
+    },
+    "pending_reason": "当前任务按先功能验证、后打包验证策略执行；本轮已足够通过功能验证关，但仍需 Windows 真机 smoke 与后续 packaging_validation。"
+  },
+  "evidence": {
+    "commit_sha": "5d581ca (working-tree)",
+    "checked_at": "2026-04-05T23:16:13+08:00",
+    "environment": "linux-dev-sandbox",
+    "commands_run": [
+      "node --check src/server.js",
+      "node --check src/installer.js",
+      "node --check public/js/app.js",
+      "node --check scripts/smoke-gateway-chain.js",
+      "node scripts/smoke-gateway-chain.js",
+      "timeout 15s node -e \"const {inspectOpenClawState}=require('./src/installer'); console.log(JSON.stringify(inspectOpenClawState(), null, 2));\"",
+      "npm run prepare:tauri-server",
+      "node --check src-tauri/server/src/server.js",
+      "node --check src-tauri/server/src/installer.js",
+      "node --check src-tauri/server/public/js/app.js",
+      "npm run task:review-guard -- TASK-9010"
+    ],
+    "evidence_paths": [
+      "tasks/TASK-9010/README.md",
+      "tasks/TASK-9010/checkpoint.json",
+      "tasks/TASK-9010/validation.json",
+      "tasks/TASK-9010/rollback.md",
+      "tasks/TASK-9010/handoff.md",
+      "scripts/smoke-gateway-chain.js"
+    ],
+    "artifacts": [
+      "/tmp/clawbox-releases/ClawBox-source-bootstrap-v0.5.4-task9010-20260406-022249.zip"
+    ],
+    "review_basis": [
+      "tasks/TASK-9010/README.md",
+      "tasks/TASK-9010/validation.json",
+      "tasks/TASK-9010/handoff.md",
+      "docs/RUNBOOKS/reviewer-independent-review.md",
+      "docs/RUNBOOKS/reviewer-quickstart.md",
+      "docs/RUNBOOKS/gateway-restart.md",
+      "docs/RUNBOOKS/status-detection.md",
+      "docs/RUNBOOKS/dashboard-url-detection.md",
+      "src/server.js",
+      "src/installer.js",
+      "src-tauri/server/src/server.js",
+      "src-tauri/server/src/installer.js"
+    ]
+  },
+  "reviewer_result": {
+    "status": "pass_with_followup",
+    "summary": "当前已经足够给出最终 reviewer 结论，而且结论应是 pass_with_followup：本轮修复点、smoke、validation、handoff 彼此一致，且明确承认边界，没有把 Linux / 沙箱结果冒充 Windows 通过；但 Windows 真机上的 restart/status/dashboard 联动 smoke 与后续 packaging_validation 仍待后续关卡。",
+    "reviewer": "木匠"
+  },
+  "risk_level": "medium",
+  "status_summary": "当前任务已通过功能验证关并以 pass_with_followup 收口；后续仍需 Windows 真机 smoke 与 packaging_validation，不应误解为全平台已完成。",
+  "open_issues": [
+    "Windows 真机下 recoverWindowsGateway() 的 stop → 端口释放 → start → 健康恢复仍未执行真实 smoke",
+    "当前 Linux 沙箱 listen 127.0.0.1:3456 返回 EPERM，无法在本机直接做 API 级 live smoke",
+    "当前 Linux 环境 openclaw CLI 存在 uv_interface_addresses / spawn EPERM 异常，限制了 live gateway status 证据"
+  ],
+  "next_action": "下一步先在 Windows 真机使用 /tmp/clawbox-releases/ClawBox-source-bootstrap-v0.5.4-task9010-20260406-022249.zip 作为统一测试包，再执行 restart/status/dashboard 联动 smoke；若真机 smoke 通过，再根据结果决定是否进入 packaging_validation。",
+  "generated_at": "2026-04-06T02:27:00+08:00"
+}

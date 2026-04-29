@@ -1,0 +1,99 @@
+{
+  "task_id": "TASK-9004",
+  "task_type": "process-improvement",
+  "target": {
+    "area": "bugfix-workflow",
+    "summary": "为 bugfix 工作流建立先功能验证后打包验证的两阶段流程",
+    "platform": [
+      "linux",
+      "windows",
+      "macos"
+    ]
+  },
+  "files_touched": [
+    "docs/RUNBOOKS/bugfix-workflow.md",
+    "docs/RUNBOOKS/reviewer-checklist.md",
+    "docs/RUNBOOKS/task-validation.md",
+    "tasks/_templates/validation.json.template",
+    "tasks/TASK-9004/validation.json"
+  ],
+  "checks_run": [
+    {
+      "name": "bugfix-workflow-template-init",
+      "kind": "smoke",
+      "command": "npm run task:init-validation -- TASK-9004 --type process-improvement --area bugfix-workflow --summary \"为 bugfix 工作流建立先功能验证后打包验证的两阶段流程\" --platform linux,windows,macos",
+      "result": "passed",
+      "notes": "已成功生成采用两阶段 validation 结构的任务目录"
+    }
+  ],
+  "lint": {
+    "status": "not_configured",
+    "notes": "项目当前无统一 lint 脚本"
+  },
+  "typecheck": {
+    "status": "not_applicable",
+    "notes": "当前主逻辑为 JS，未配置 TypeScript typecheck"
+  },
+  "feature_validation": {
+    "status": "passed",
+    "checks_run": [
+      {
+        "name": "workflow-doc-review",
+        "kind": "doc-check",
+        "result": "passed",
+        "notes": "已将功能验证优先、打包验证后置的原则落入 runbook 与模板"
+      }
+    ],
+    "regression_checks": [
+      {
+        "name": "validation-schema-compatibility",
+        "result": "passed",
+        "notes": "新结构兼容现有任务目录、checkpoint、rollback、handoff 机制"
+      },
+      {
+        "name": "task-truth-read-order",
+        "result": "passed",
+        "notes": "两阶段 validation 仍兼容任务真相优先读取顺序"
+      }
+    ],
+    "smoke_checks": [
+      {
+        "name": "template-smoke",
+        "result": "passed",
+        "environment": "linux",
+        "notes": "初始化出来的 validation.json 已明确区分 feature_validation 与 packaging_validation"
+      }
+    ]
+  },
+  "packaging_validation": {
+    "status": "pending",
+    "platforms": {
+      "linux": {
+        "status": "pending",
+        "notes": "后续功能验证通过后的构建 / 安装 smoke 关卡"
+      },
+      "windows": {
+        "status": "pending",
+        "notes": "后续真机构建 / 安装验证，不作为本轮默认阻塞项"
+      },
+      "macos": {
+        "status": "pending",
+        "notes": "后续人工或发布前验证，不作为本轮默认阻塞项"
+      }
+    },
+    "pending_reason": "本轮策略明确为先功能验证后打包验证，且当前不默认要求先打包"
+  },
+  "reviewer_result": {
+    "status": "approved",
+    "summary": "两阶段 bugfix 流程已以最小可用方式落地，功能验证闭环已优先于打包验证闭环",
+    "reviewer": "main-agent"
+  },
+  "risk_level": "low",
+  "status_summary": "bugfix 工作流已切换为先功能验证、后打包验证；打包验证已预留接口但不作为本轮默认第一关",
+  "open_issues": [
+    "当前仓库尚未接入统一 unit/integration test runner，功能验证仍以语法检查、脚本验证、runbook 驱动 smoke/regression 为主",
+    "Tauri dev 的统一启动脚本尚未补充，本轮先把其作为可用开发态验证能力记录"
+  ],
+  "next_action": "后续 bugfix 任务默认先填写 feature_validation，功能关通过后再按平台推进 packaging_validation",
+  "generated_at": "2026-04-05T12:16:30+08:00"
+}

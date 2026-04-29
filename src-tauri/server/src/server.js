@@ -3,37 +3,984 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
-const { exec, execSync } = require('child_process');
-const { installOpenClaw, updateOpenClaw, uninstallOpenClaw, isOpenClawInstalled, getOpenClawVersion, isGatewayRunning, getOS, checkNodeVersion, isRoot, searchClawHubSkills, installClawHubSkill, isClawHubAvailable, installClawHubCLI, resolveClawHubBinary } = require('./installer');
-const { getModelConfig, updateModelConfig, switchModel, switchModelById, deleteModel, getFeishuConfig, updateFeishuConfig, getConfigSummary, getInstalledModels, getChannelCatalog, getChannelConfig, getChannelsState, normalizeManualChannelPayload, upsertChannelConfig, removeChannelConfig } = require('./config');
+const { exec, execSync, spawnSync, spawn } = require('child_process');
+const { installOpenClaw, updateOpenClaw, uninstallOpenClaw, isOpenClawInstalled, getOpenClawVersion, isGatewayRunning, getOS, checkNodeVersion, getNodeInstallationInfo, getRuntimeNodeInfo, isRoot, searchClawHubSkills, installClawHubSkill, isClawHubAvailable, installClawHubCLI, resolveOpenClawPath, resolveClawHubBinary, probeClawHubAvailability, getExtendedShellEnv, buildWindowsRepairEnvironmentReport, inspectOpenClawState, __test: installerTest } = require('./installer');
+const { getModelConfig, updateModelConfig, switchModel, switchModelById, deleteModel, getFeishuConfig, updateFeishuConfig, getConfigSummary, getInstalledModels, getChannelCatalog, getChannelConfig, getChannelsState, normalizeManualChannelPayload, upsertChannelConfig, removeChannelConfig, getDefaultBaseUrl } = require('./config');
+
+const STATUS_STICKY_TTL_MS = 10000;
+const STATUS_CACHE_TTL_MS = 5000;
+const STATUS_LITE_INSPECT_TTL_MS = 15000;
+const TOOLS_STATUS_CACHE_TTL_MS = 15000;
+let lastHealthyOpenClawLifecycle = null;
+let cachedStatusPayload = null;
+let cachedStatusAt = 0;
+let cachedLiteLifecycle = null;
+let cachedLiteLifecycleAt = 0;
+let cachedToolsStatusPayload = null;
+let cachedToolsStatusAt = 0;
+
+function detectGatewayHealthFlags(state) {
+  const payload = state?.gatewayStatus?.data;
+  const statusOutput = [state?.gatewayStatus?.stdout, state?.gatewayStatus?.stderr, state?.gatewayStatus?.error].filter(Boolean).join('\n');
+  const dashboardUrl = payload ? parseOpenclawDashboardUrlFromJson(payload) : '';
+  const port = (payload ? findGatewayPortInJson(payload) : null) || parseGatewayPortFromText(statusOutput);
+  const rpcOk = !!readNestedValue(payload, ['rpc', 'ok'])
+    || !!readNestedValue(payload, ['gateway', 'rpcOk'])
+    || !!readNestedValue(payload, ['gateway', 'rpc', 'ok'])
+    || !!readNestedValue(payload, ['health', 'rpcOk'])
+    || !!readNestedValue(payload, ['probe', 'ok'])
+    || /rpc probe:\s*ok/i.test(statusOutput);
+  const rpcFailed = !!readNestedValue(payload, ['rpc', 'ok']) === false
+    || !!readNestedValue(payload, ['gateway', 'rpcOk']) === false
+    || !!readNestedValue(payload, ['gateway', 'rpc', 'ok']) === false
+    || !!readNestedValue(payload, ['health', 'rpcOk']) === false
+    || !!readNestedValue(payload, ['probe', 'ok']) === false
+    || /rpc probe:\s*failed/i.test(statusOutput)
+    || /\btimeout\b/i.test(statusOutput);
+  const listening = (!!port && /listening\s*:\s*127\.0\.0\.1:\d+/i.test(statusOutput))
+    || (!!port && os.platform() === 'win32' && getWindowsPortListeners(port).some(isLikelyOpenClawGatewayProcess));
+
+  return {
+    dashboardUrl,
+    port,
+    rpcOk,
+    rpcFailed,
+    listening,
+    usable: !!(rpcOk && (dashboardUrl || listening || port)),
+    unhealthy: !rpcOk && rpcFailed && !!(dashboardUrl || listening || port)
+  };
+}
+
+function buildOpenClawLifecycle(state) {
+  const gatewayHealth = detectGatewayHealthFlags(state);
+  const status = {
+    installed: !!state?.installed,
+    version: state?.version || null,
+    path: state?.openclawPath || null,
+    configExists: !!state?.configExists,
+    configReady: !!state?.configReady,
+    gatewayReady: !!state?.gatewayReady,
+    gatewayRunning: !!state?.gatewayRunning,
+    gatewayUsable: gatewayHealth.usable,
+    gatewayUnhealthy: gatewayHealth.unhealthy,
+    gatewayProbeTimeout: gatewayHealth.unhealthy && gatewayHealth.rpcFailed,
+    gatewayFailure: null,
+    summary: state?.installed
+      ? `where/openclaw --version 探测通过${state?.openclawPath ? ` (${state.openclawPath})` : ''}`
+      : 'where/openclaw --version 未通过'
+  };
+
+  if (!status.installed) {
+    status.stage = 'not_installed';
+    status.title = '未安装';
+    status.detail = '尚未探测到可用的 OpenClaw。';
+    return status;
+  }
+
+  if (!status.configReady) {
+    status.stage = 'init_incomplete';
+    status.title = '已安装，初始化未完成';
+    status.detail = 'OpenClaw 本体已安装，但自动初始化配置未完成。';
+    return status;
+  }
+
+  if (!status.gatewayReady) {
+    status.stage = 'gateway_incomplete';
+    status.title = '已安装，Gateway 未完成';
+    const gatewayError = String(state?.gatewayStatus?.error || state?.gatewayStatus?.stderr || state?.gatewayStatus?.stdout || '').trim();
+    if (/schtasks create failed|拒绝访问|access is denied/i.test(gatewayError)) {
+      status.gatewayFailure = 'permission';
+      status.detail = 'Windows 计划任务创建被拒绝访问，可能需要管理员权限；OpenClaw 本体已安装，但 Gateway service 未完成。';
+    } else if (/timed out after 60s|health checks?/i.test(gatewayError)) {
+      status.gatewayFailure = 'timeout';
+      status.detail = 'Gateway restart 超时，健康检查未通过；OpenClaw 本体已安装，但后台服务配置未完成。';
+    } else {
+      status.detail = 'OpenClaw 本体已安装，但 Gateway 服务尚未具备启动条件。';
+    }
+    return status;
+  }
+
+  if (status.gatewayRunning) {
+    status.stage = 'ready';
+    status.title = '已安装并运行';
+    status.detail = 'OpenClaw 与 Gateway 均已就绪。';
+    return status;
+  }
+
+  if (status.gatewayUsable) {
+    status.stage = 'gateway_degraded';
+    status.title = 'Gateway 可用，状态待同步';
+    status.detail = 'Gateway 已可连接，但官方 runtime 状态尚未完全同步。';
+    return status;
+  }
+
+  if (status.gatewayUnhealthy) {
+    status.stage = 'gateway_unhealthy';
+    status.title = 'Gateway 异常';
+    status.detail = 'Gateway 端口已监听，但 RPC probe 未通过；常见于 Windows 开机自启动后的半活状态。';
+    return status;
+  }
+
+  status.stage = 'installed_ready';
+  status.title = '已安装，可启动';
+  status.detail = 'OpenClaw 已安装，Gateway 已具备启动条件。';
+  return status;
+}
+
+function buildOpenClawLifecycleFromConfigOnly() {
+  const openclawPath = resolveOpenClawPath();
+  const installed = !!openclawPath;
+  const configAuth = readOpenClawDashboardAuthFromConfig();
+  const configExists = !!configAuth?.exists;
+  const configReady = configExists && ['none', 'token'].includes(configAuth?.mode || '');
+  const recentSticky = lastHealthyOpenClawLifecycle && (Date.now() - lastHealthyOpenClawLifecycle.time) < STATUS_STICKY_TTL_MS
+    ? lastHealthyOpenClawLifecycle.status
+    : null;
+
+  if (!installed) {
+    return {
+      installed: false,
+      version: null,
+      path: null,
+      configExists,
+      configReady: false,
+      gatewayReady: false,
+      gatewayRunning: false,
+      gatewayUsable: false,
+      gatewayUnhealthy: false,
+      gatewayProbeTimeout: false,
+      gatewayFailure: null,
+      summary: 'where/openclaw 未通过',
+      stage: 'not_installed',
+      title: '未安装',
+      detail: '尚未探测到可用的 OpenClaw。'
+    };
+  }
+
+  if (!configReady) {
+    return {
+      installed: true,
+      version: null,
+      path: openclawPath || null,
+      configExists,
+      configReady: false,
+      gatewayReady: false,
+      gatewayRunning: false,
+      gatewayUsable: false,
+      gatewayUnhealthy: false,
+      gatewayProbeTimeout: false,
+      gatewayFailure: null,
+      summary: `快速配置检测${openclawPath ? ` (${openclawPath})` : ''}`,
+      stage: 'init_incomplete',
+      title: '已安装，初始化未完成',
+      detail: 'OpenClaw 本体已安装，但自动初始化配置未完成。'
+    };
+  }
+
+  if (recentSticky) {
+    return {
+      ...recentSticky,
+      sticky: true,
+      detail: recentSticky.gatewayRunning
+        ? '沿用最近一次成功状态，等待后台探测同步。'
+        : '沿用最近一次可用状态，等待后台探测同步。'
+    };
+  }
+
+  return {
+    installed: true,
+    version: null,
+    path: openclawPath || null,
+    configExists,
+    configReady: true,
+    gatewayReady: false,
+    gatewayRunning: false,
+    gatewayUsable: false,
+    gatewayUnhealthy: false,
+    gatewayProbeTimeout: false,
+    gatewayFailure: null,
+    summary: `快速配置检测${openclawPath ? ` (${openclawPath})` : ''}`,
+    stage: 'gateway_incomplete',
+    title: '已安装，等待检测',
+    detail: '已检测到 OpenClaw 与基础配置，等待后台探测确认 Gateway 状态。'
+  };
+}
+
+function applyOpenClawLifecycleSticky(status) {
+  const now = Date.now();
+  if (status?.stage === 'ready' || status?.stage === 'installed_ready' || status?.stage === 'gateway_degraded') {
+    lastHealthyOpenClawLifecycle = {
+      time: now,
+      status: {
+        ...status,
+        sticky: false
+      }
+    };
+    return status;
+  }
+
+  if (lastHealthyOpenClawLifecycle && (now - lastHealthyOpenClawLifecycle.time) < STATUS_STICKY_TTL_MS) {
+    return {
+      ...lastHealthyOpenClawLifecycle.status,
+      sticky: true,
+      detail: lastHealthyOpenClawLifecycle.status.gatewayRunning
+        ? '沿用最近一次成功状态，等待后台探测同步。'
+        : '沿用最近一次可用状态，等待后台探测同步。'
+    };
+  }
+
+  return status;
+}
+
+function getLiteOpenClawLifecycle() {
+  if (cachedLiteLifecycle && (Date.now() - cachedLiteLifecycleAt) < STATUS_LITE_INSPECT_TTL_MS) {
+    return cachedLiteLifecycle;
+  }
+
+  const configOnly = buildOpenClawLifecycleFromConfigOnly();
+  if (!configOnly.installed || !configOnly.configReady) {
+    cachedLiteLifecycle = configOnly;
+    cachedLiteLifecycleAt = Date.now();
+    return configOnly;
+  }
+
+  try {
+    const inspected = applyOpenClawLifecycleSticky(buildOpenClawLifecycle(inspectOpenClawState()));
+    cachedLiteLifecycle = inspected;
+    cachedLiteLifecycleAt = Date.now();
+    return inspected;
+  } catch {
+    cachedLiteLifecycle = configOnly;
+    cachedLiteLifecycleAt = Date.now();
+    return configOnly;
+  }
+}
+
+function runPowerShellJson(script, timeout = 15000) {
+  try {
+    const result = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      encoding: 'utf8',
+      timeout,
+      env: getExtendedShellEnv()
+    });
+    const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+    if (result.status !== 0 || result.error) return [];
+    if (!output) return [];
+    const parsed = JSON.parse(output);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [];
+  }
+}
+
+function quoteWindowsCmdArg(value) {
+  const stringValue = String(value ?? '');
+  return `"${stringValue.replace(/"/g, '""').replace(/%/g, '%%')}"`;
+}
+
+function normalizeWindowsWrapperPath(commandPath) {
+  let normalized = String(commandPath || '').trim();
+  while ((normalized.startsWith('"') && normalized.endsWith('"')) || (normalized.startsWith("'") && normalized.endsWith("'"))) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+  return normalized.replace(/^"+|"+$/g, '').replace(/^'+|'+$/g, '');
+}
+
+function resolveWindowsCliCommandPath(commandPath) {
+  const normalized = normalizeWindowsWrapperPath(commandPath);
+  if (os.platform() !== 'win32' || !normalized) return normalized;
+
+  if (/\.ps1$/i.test(normalized)) {
+    const cmdCandidate = `${normalized.slice(0, -4)}.cmd`;
+    if (fs.existsSync(cmdCandidate)) return cmdCandidate;
+  }
+
+  if (!path.extname(normalized)) {
+    const cmdCandidate = `${normalized}.cmd`;
+    if (fs.existsSync(cmdCandidate)) return cmdCandidate;
+  }
+
+  return normalized;
+}
+
+function createRequestTimer(label, req) {
+  const startedAt = Date.now();
+  const steps = [];
+  const route = req?.originalUrl || req?.url || label;
+
+  return {
+    step(name, meta = {}) {
+      const stepStartedAt = Date.now();
+      return (extra = {}) => {
+        steps.push({
+          name,
+          ms: Date.now() - stepStartedAt,
+          ...meta,
+          ...extra
+        });
+      };
+    },
+    log(status = 'ok', meta = {}) {
+      const payload = {
+        route,
+        status,
+        totalMs: Date.now() - startedAt,
+        ...meta,
+        steps
+      };
+      console.log(`[timing] ${label} ${JSON.stringify(payload)}`);
+    }
+  };
+}
+
+function shouldAutoOpenBrowser(devMode) {
+  if (devMode) return false;
+  if (process.env.CLAWBOX_DESKTOP === '1') return false;
+  if (process.env.CLAWBOX_NO_AUTO_OPEN === '1') return false;
+  if (String(process.env.BROWSER || '').toLowerCase() === 'none') return false;
+  return true;
+}
+
+function openBrowserUrl(url) {
+  if (!url) return;
+
+  try {
+    if (process.platform === 'win32') {
+      spawn('cmd.exe', ['/d', '/s', '/c', `start "" ${quoteWindowsCmdArg(url)}`], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true
+      }).unref();
+      return;
+    }
+
+    const command = process.platform === 'darwin' ? 'open' : 'xdg-open';
+    spawn(command, [url], {
+      detached: true,
+      stdio: 'ignore'
+    }).unref();
+  } catch {}
+}
+
+function runResolvedCliCommand(commandPath, args = [], timeout = 10000) {
+  if (!commandPath) {
+    return { ok: false, status: null, stdout: '', stderr: '', output: '', error: new Error('未找到可执行文件') };
+  }
+
+  const normalizedCommandPath = os.platform() === 'win32'
+    ? resolveWindowsCliCommandPath(commandPath)
+    : commandPath;
+  const isWindowsWrapper = os.platform() === 'win32' && /\.(cmd|bat)$/i.test(normalizedCommandPath);
+  const result = isWindowsWrapper
+    ? spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/c', normalizedCommandPath, ...args], {
+        encoding: 'utf8',
+        timeout,
+        env: getExtendedShellEnv(),
+        windowsHide: true,
+        windowsVerbatimArguments: true
+      })
+    : spawnSync(normalizedCommandPath, args, {
+        encoding: 'utf8',
+        timeout,
+        env: getExtendedShellEnv(),
+        windowsHide: os.platform() === 'win32'
+      });
+
+  return {
+    ok: result.status === 0 && !result.error,
+    status: result.status,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    output: [result.stdout, result.stderr].filter(Boolean).join('\n').trim(),
+    error: result.error || null
+  };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readNestedValue(value, pathParts) {
+  let current = value;
+  for (const part of pathParts) {
+    if (!current || typeof current !== 'object' || !(part in current)) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function findStringInObject(value, candidatePaths) {
+  for (const candidatePath of candidatePaths) {
+    const candidate = readNestedValue(value, candidatePath);
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return '';
+}
+
+function findNumberInObject(value, candidatePaths) {
+  for (const candidatePath of candidatePaths) {
+    const candidate = readNestedValue(value, candidatePath);
+    const num = Number(candidate);
+    if (Number.isInteger(num) && num > 0 && num <= 65535) return num;
+  }
+  return null;
+}
+
+function parseGatewayPortFromText(output) {
+  const text = String(output || '');
+  const patterns = [
+    /gateway port\s+(\d{2,5})/i,
+    /port\s+(\d{2,5})\s+is already in use/i,
+    /127\.0\.0\.1:(\d{2,5})/i,
+    /localhost:(\d{2,5})/i,
+    /--port\s+(\d{2,5})/i,
+    /\bport\D{0,6}(\d{2,5})\b/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const port = Number(match?.[1]);
+    if (Number.isInteger(port) && port > 0 && port <= 65535) return port;
+  }
+  return null;
+}
+
+function findGatewayPortInJson(payload) {
+  return findNumberInObject(payload, [
+    ['dashboard', 'port'],
+    ['gateway', 'port'],
+    ['gateway', 'listenPort'],
+    ['service', 'port'],
+    ['runtime', 'port'],
+    ['port']
+  ]);
+}
+
+function parseOpenClawTokenFromText(output) {
+  const text = String(output || '');
+  const patterns = [
+    /[?&](?:token|auth)=([^\s'"&]+)/i,
+    /\btoken\b\s*[:=]\s*([^\s'\";]+)/i,
+    /\bauth\b\s*[:=]\s*([^\s'\";]+)/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1].trim();
+  }
+  return '';
+}
+
+function findGatewayTokenInJson(payload) {
+  return findStringInObject(payload, [
+    ['dashboard', 'token'],
+    ['gateway', 'token'],
+    ['auth', 'token'],
+    ['token'],
+    ['auth']
+  ]);
+}
+
+function buildOpenClawDashboardUrlFromParts(port, token) {
+  const normalizedPort = Number(port);
+  if (!Number.isInteger(normalizedPort) || normalizedPort <= 0 || normalizedPort > 65535) return null;
+  const url = new URL(`http://127.0.0.1:${normalizedPort}/`);
+  if (token) url.searchParams.set('token', token);
+  return url.toString();
+}
+
+function readOpenClawDashboardAuthFromConfig(configPath) {
+  const fallbackPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+  const targetPath = String(configPath || '').trim() || fallbackPath;
+
+  try {
+    if (!fs.existsSync(targetPath)) {
+      return {
+        exists: false,
+        path: targetPath,
+        mode: null,
+        token: '',
+        port: null,
+        url: null
+      };
+    }
+
+    const payload = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
+    const mode = findStringInObject(payload, [
+      ['gateway', 'auth', 'mode'],
+      ['config', 'gateway', 'auth', 'mode']
+    ]) || null;
+    const token = findStringInObject(payload, [
+      ['gateway', 'auth', 'token'],
+      ['config', 'gateway', 'auth', 'token']
+    ]) || '';
+    const port = findNumberInObject(payload, [
+      ['gateway', 'port'],
+      ['gateway', 'listenPort'],
+      ['config', 'gateway', 'port'],
+      ['config', 'gateway', 'listenPort']
+    ]) || null;
+    const url = findStringInObject(payload, [
+      ['gateway', 'dashboard', 'url'],
+      ['config', 'gateway', 'dashboard', 'url']
+    ]) || null;
+
+    return { exists: true, path: targetPath, mode, token, port, url };
+  } catch (error) {
+    return {
+      exists: true,
+      path: targetPath,
+      mode: null,
+      token: '',
+      port: null,
+      url: null,
+      error: error.message
+    };
+  }
+}
+
+function normalizeOpenClawDashboardUrl(url, token) {
+  if (!url || typeof url !== 'string') return null;
+  try {
+    const parsed = new URL(url.trim());
+    if (token && !parsed.searchParams.get('token') && !parsed.searchParams.get('auth')) {
+      parsed.searchParams.set('token', token);
+    }
+    return parsed.toString();
+  } catch {
+    return url.trim();
+  }
+}
+
+function detectGatewayRunningFromPayload(payload) {
+  return installerTest.isGatewayStatusRunning(payload);
+}
+
+function getWindowsPortListeners(port) {
+  const normalizedPort = Number(port);
+  if (os.platform() !== 'win32' || !Number.isInteger(normalizedPort) || normalizedPort <= 0) return [];
+  const script = [
+    `$port=${normalizedPort};`,
+    "$conns = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue;",
+    "if (-not $conns) { '[]'; exit 0 }",
+    "$items = foreach ($conn in $conns) {",
+    "  $proc = Get-CimInstance Win32_Process -Filter \"ProcessId = $($conn.OwningProcess)\" -ErrorAction SilentlyContinue;",
+    "  [PSCustomObject]@{ pid = $conn.OwningProcess; localAddress = $conn.LocalAddress; localPort = $conn.LocalPort; name = $proc.Name; commandLine = $proc.CommandLine; executablePath = $proc.ExecutablePath }",
+    "}",
+    "$items | ConvertTo-Json -Compress"
+  ].join(' ');
+  return runPowerShellJson(script, 15000).map((item) => ({
+    pid: Number(item.pid || item.ProcessId || item.OwningProcess || 0),
+    localAddress: item.localAddress || item.LocalAddress || '',
+    localPort: Number(item.localPort || item.LocalPort || normalizedPort),
+    name: item.name || item.Name || '',
+    commandLine: item.commandLine || item.CommandLine || '',
+    executablePath: item.executablePath || item.ExecutablePath || ''
+  })).filter((item) => item.pid > 0);
+}
+
+function isLikelyOpenClawGatewayProcess(processInfo) {
+  const haystack = [processInfo?.name, processInfo?.commandLine, processInfo?.executablePath].filter(Boolean).join(' ').toLowerCase();
+  return haystack.includes('openclaw') && haystack.includes('gateway');
+}
+
+async function waitForPortState(port, shouldBeFree, timeoutMs = 20000) {
+  const normalizedPort = Number(port);
+  if (!Number.isInteger(normalizedPort) || normalizedPort <= 0) return { success: !shouldBeFree, listeners: [] };
+  const start = Date.now();
+  let listeners = [];
+  while (Date.now() - start < timeoutMs) {
+    listeners = getWindowsPortListeners(normalizedPort);
+    if (shouldBeFree ? listeners.length === 0 : listeners.length > 0) {
+      return { success: true, listeners };
+    }
+    await sleep(1000);
+  }
+  listeners = getWindowsPortListeners(normalizedPort);
+  return { success: shouldBeFree ? listeners.length === 0 : listeners.length > 0, listeners };
+}
+
+async function waitForGatewayHealthy(timeoutMs = 30000) {
+  const start = Date.now();
+  let lastState = inspectOpenClawState();
+  while (Date.now() - start < timeoutMs) {
+    lastState = inspectOpenClawState();
+    if (lastState.gatewayRunning) return { success: true, state: lastState };
+    await sleep(1000);
+  }
+  lastState = inspectOpenClawState();
+  return { success: !!lastState.gatewayRunning, state: lastState };
+}
+
+function isGatewayUsableFromState(state) {
+  if (!state || typeof state !== 'object') return false;
+  if (state.gatewayRunning) return true;
+
+  const payload = state.gatewayStatus?.data;
+  const statusOutput = [state.gatewayStatus?.stdout, state.gatewayStatus?.stderr, state.gatewayStatus?.error].filter(Boolean).join('\n');
+  const dashboardUrl = payload ? parseOpenclawDashboardUrlFromJson(payload) : '';
+  const port = (payload ? findGatewayPortInJson(payload) : null) || parseGatewayPortFromText(statusOutput);
+
+  const rpcOk = !!readNestedValue(payload, ['rpc', 'ok'])
+    || !!readNestedValue(payload, ['gateway', 'rpcOk'])
+    || !!readNestedValue(payload, ['gateway', 'rpc', 'ok'])
+    || !!readNestedValue(payload, ['health', 'rpcOk'])
+    || !!readNestedValue(payload, ['probe', 'ok'])
+    || /rpc probe:\s*ok/i.test(statusOutput);
+
+  const listening = (!!port && /listening\s*:\s*127\.0\.0\.1:\d+/i.test(statusOutput))
+    || (!!port && os.platform() === 'win32' && getWindowsPortListeners(port).some(isLikelyOpenClawGatewayProcess));
+
+  return !!(rpcOk && (dashboardUrl || listening || port));
+}
+
+async function observeWindowsGatewayRecovery(timeoutMs = 20000, intervalMs = 2000) {
+  const start = Date.now();
+  let lastState = inspectOpenClawState();
+
+  while (Date.now() - start < timeoutMs) {
+    lastState = inspectOpenClawState();
+    if (isGatewayUsableFromState(lastState)) {
+      return { success: true, state: lastState, degraded: !lastState.gatewayRunning };
+    }
+    await sleep(intervalMs);
+  }
+
+  lastState = inspectOpenClawState();
+  return { success: isGatewayUsableFromState(lastState), state: lastState, degraded: !lastState.gatewayRunning };
+}
+
+function summarizeWindowsGatewayListeners(port, listeners = []) {
+  if (!listeners.length) return port ? `端口 ${port} 当前无监听进程` : '当前未检测到监听进程';
+  return listeners.map((item) => `pid ${item.pid}: ${item.commandLine || item.name || item.executablePath || '未知进程'}`).join('；');
+}
+
+function killWindowsProcessTree(pid) {
+  const normalizedPid = Number(pid);
+  if (os.platform() !== 'win32' || !Number.isInteger(normalizedPid) || normalizedPid <= 0) {
+    return { ok: false, output: '无效的 PID' };
+  }
+
+  try {
+    const result = spawnSync('taskkill', ['/PID', String(normalizedPid), '/F', '/T'], {
+      encoding: 'utf8',
+      timeout: 15000,
+      env: getExtendedShellEnv(),
+      windowsHide: true
+    });
+    return {
+      ok: result.status === 0 && !result.error,
+      output: [result.stdout, result.stderr].filter(Boolean).join('\n').trim(),
+      error: result.error || null
+    };
+  } catch (error) {
+    return { ok: false, output: error.message || 'taskkill 执行失败', error };
+  }
+}
+
+async function recoverWindowsGateway(openclawPath) {
+  const beforeState = inspectOpenClawState();
+  const statusOutput = [beforeState?.gatewayStatus?.stdout, beforeState?.gatewayStatus?.stderr, beforeState?.gatewayStatus?.error].filter(Boolean).join('\n');
+  const port = findGatewayPortInJson(beforeState?.gatewayStatus?.data) || parseGatewayPortFromText(statusOutput) || findNumberInObject(beforeState, [['gatewayPort']]);
+  const listenersBefore = getWindowsPortListeners(port);
+  const shouldStopFirst = !!beforeState.gatewayRunning || listenersBefore.some(isLikelyOpenClawGatewayProcess);
+  let stopResult = null;
+
+  if (shouldStopFirst) {
+    stopResult = runResolvedCliCommand(openclawPath || 'openclaw', ['gateway', 'stop'], 30000);
+    let release = await waitForPortState(port, true, 25000);
+    if (!release.success) {
+      const staleGatewayListeners = release.listeners.filter(isLikelyOpenClawGatewayProcess);
+      if (staleGatewayListeners.length) {
+        const killOutputs = staleGatewayListeners
+          .map((item) => ({ pid: item.pid, result: killWindowsProcessTree(item.pid) }))
+          .filter((item) => item.result.output)
+          .map((item) => `taskkill pid ${item.pid}: ${item.result.output}`);
+        release = await waitForPortState(port, true, 10000);
+        if (release.success) {
+          stopResult = {
+            ...stopResult,
+            output: [stopResult?.output, ...killOutputs].filter(Boolean).join('\n')
+          };
+        }
+      }
+    }
+    if (!release.success) {
+      return {
+        success: false,
+        stage: 'stop',
+        port,
+        stopResult,
+        listeners: release.listeners,
+        error: `已尝试停止 Gateway，但端口 ${port || '未知'} 仍被占用：${summarizeWindowsGatewayListeners(port, release.listeners)}`
+      };
+    }
+  }
+
+  const startResult = runResolvedCliCommand(openclawPath || 'openclaw', ['gateway', 'start'], 30000);
+  if (!startResult.ok) {
+    return {
+      success: false,
+      stage: 'start',
+      port,
+      stopResult,
+      startResult,
+      error: startResult.output || startResult.error?.message || 'Gateway 启动失败'
+    };
+  }
+
+  const health = await waitForGatewayHealthy(30000);
+  if (!health.success) {
+    const listenersAfter = getWindowsPortListeners(port || findGatewayPortInJson(health.state?.gatewayStatus?.data) || parseGatewayPortFromText([health.state?.gatewayStatus?.stdout, health.state?.gatewayStatus?.stderr, health.state?.gatewayStatus?.error].filter(Boolean).join('\n')));
+    return {
+      success: false,
+      stage: 'health',
+      port: port || findGatewayPortInJson(health.state?.gatewayStatus?.data) || null,
+      stopResult,
+      startResult,
+      state: health.state,
+      listeners: listenersAfter,
+      error: `Gateway 已启动但健康检查未通过${listenersAfter.length ? `；${summarizeWindowsGatewayListeners(port, listenersAfter)}` : ''}`
+    };
+  }
+
+  return {
+    success: true,
+    stage: 'done',
+    port: port || findGatewayPortInJson(health.state?.gatewayStatus?.data) || null,
+    stopResult,
+    startResult,
+    state: health.state
+  };
+}
+
+function getWindowsNodeRegistryEntries() {
+  if (os.platform() !== 'win32') return [];
+
+  const script = [
+    "$roots=@(",
+    "'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',",
+    "'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',",
+    "'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'",
+    ");",
+    "Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue |",
+    "Where-Object {",
+    "  ($_.DisplayName -match 'Node\\.js') -or",
+    "  ($_.DisplayName -match '^Node.js') -or",
+    "  ($_.Publisher -match 'OpenJS')",
+    "} |",
+    "Select-Object DisplayName, DisplayVersion, Publisher, InstallLocation, QuietUninstallString, UninstallString, PSChildName |",
+    "ConvertTo-Json -Compress"
+  ].join(' ');
+
+  return runPowerShellJson(script).map((entry) => ({
+    displayName: entry.DisplayName || '',
+    displayVersion: entry.DisplayVersion || '',
+    publisher: entry.Publisher || '',
+    installLocation: entry.InstallLocation || '',
+    quietUninstallString: entry.QuietUninstallString || '',
+    uninstallString: entry.UninstallString || '',
+    productCode: entry.PSChildName || ''
+  }));
+}
+
+function buildWindowsNodeManualHint(nodeInfo, registryEntries, logs) {
+  const entry = registryEntries[0];
+  const lines = [
+    '无法完成 Node.js 自动卸载。',
+    '',
+    `当前检测路径: ${nodeInfo.path || '未找到'}`,
+  ];
+
+  if (nodeInfo.version) lines.push(`当前检测版本: ${nodeInfo.version}`);
+  if (entry?.displayName) lines.push(`注册表安装项: ${entry.displayName}${entry.displayVersion ? ` ${entry.displayVersion}` : ''}`);
+  if (entry?.uninstallString) lines.push(`卸载命令: ${entry.uninstallString}`);
+  if (entry?.installLocation) lines.push(`安装目录: ${entry.installLocation}`);
+
+  lines.push(
+    '',
+    '建议后续路径：',
+    '1. 设置 → 应用 → 已安装的应用，搜索 Node.js 后卸载',
+    '2. 以管理员 PowerShell 执行 winget uninstall OpenJS.NodeJS.LTS 或 winget uninstall OpenJS.NodeJS',
+    '3. 如果界面弹出官方卸载器，请完成向导后重新打开 ClawBox'
+  );
+
+  if (logs.length) {
+    lines.push('', logs.join('\n'));
+  }
+
+  return lines.join('\n');
+}
+
+function getWindowsNodeUninstallGuard(nodeInfo, runtimeNode, registryEntries) {
+  const normalizedNodePath = String(nodeInfo?.path || '').toLowerCase();
+  const normalizedRuntimePath = String(runtimeNode?.path || '').toLowerCase();
+  const sameRuntime = normalizedNodePath && normalizedRuntimePath && normalizedNodePath === normalizedRuntimePath;
+  const runtimeLooksBundled = normalizedRuntimePath && !['windows_official', 'chocolatey', 'scoop'].includes(runtimeNode?.source) && !registryEntries.some((entry) => String(entry.installLocation || '').toLowerCase() === normalizedRuntimePath);
+  const systemManagedNode = registryEntries.length > 0 || ['windows_official', 'chocolatey', 'scoop'].includes(nodeInfo?.source);
+
+  if (sameRuntime) {
+    return { blocked: true, reason: 'runtime_in_use', detail: '当前 ClawBox 仍直接运行在这个系统 Node.js 上，当前会话内不能自动卸载。' };
+  }
+
+  if (runtimeNode?.installed && !runtimeLooksBundled) {
+    return { blocked: true, reason: 'runtime_not_isolated', detail: '当前运行时尚未证明与系统 Node.js 隔离；为避免误导，本轮禁用自动卸载。' };
+  }
+
+  if (systemManagedNode) {
+    return { blocked: true, reason: 'system_managed', detail: runtimeLooksBundled ? '当前检测到系统级 Node.js；即使 ClawBox 可能有独立 runtime，本轮仍仅支持手动卸载。' : '当前检测到系统级 Node.js，且 ClawBox 运行时仍依赖或可能依赖系统 Node.js；本轮仅支持手动卸载。' };
+  }
+
+  return { blocked: false, reason: null, detail: '' };
+}
+
+function getWindowsNodeUninstallState(nodeInfo, runtimeNode, registryEntries) {
+  const guard = getWindowsNodeUninstallGuard(nodeInfo, runtimeNode, registryEntries);
+  const diagnostics = {
+    nodePath: nodeInfo?.path || null,
+    nodeVersion: nodeInfo?.version || null,
+    nodeSource: nodeInfo?.source || null,
+    runtimePath: runtimeNode?.path || null,
+    runtimeVersion: runtimeNode?.version || null,
+    runtimeSource: runtimeNode?.source || null,
+    registryCount: registryEntries.length,
+    registryDisplayName: registryEntries[0]?.displayName || ''
+  };
+
+  if (nodeInfo?.installed) {
+    if (guard.reason === 'runtime_in_use') {
+      return {
+        installed: true,
+        blocked: true,
+        reason: 'runtime_in_use',
+        status: 'runtime_in_use',
+        detail: guard.detail,
+        diagnostics
+      };
+    }
+
+    if (guard.reason === 'runtime_not_isolated') {
+      return {
+        installed: true,
+        blocked: true,
+        reason: 'runtime_not_isolated',
+        status: 'runtime_not_isolated',
+        detail: guard.detail,
+        diagnostics
+      };
+    }
+
+    if (guard.reason === 'system_managed') {
+      return {
+        installed: true,
+        blocked: true,
+        reason: 'system_managed',
+        status: 'system_managed',
+        detail: guard.detail,
+        diagnostics
+      };
+    }
+
+    return {
+      installed: true,
+      blocked: false,
+      reason: null,
+      status: 'removable',
+      detail: '当前检测到独立系统 Node.js，可尝试自动卸载。',
+      diagnostics
+    };
+  }
+
+  if (runtimeNode?.installed) {
+    return {
+      installed: false,
+      blocked: true,
+      reason: 'runtime_only',
+      status: 'runtime_only',
+      detail: `当前 ClawBox 使用独立运行时 ${runtimeNode.version || 'Node.js'}，未检测到可单独卸载的系统 Node.js。`,
+      diagnostics
+    };
+  }
+
+  return {
+    installed: false,
+    blocked: true,
+    reason: 'absent',
+    status: 'absent',
+    detail: '未检测到可卸载的 Node.js。',
+    diagnostics
+  };
+}
+
+function tryExecCommand(command, options = {}) {
+  try {
+    execSync(command, {
+      stdio: 'pipe',
+      encoding: 'utf8',
+      env: getExtendedShellEnv(),
+      timeout: options.timeout || 60000,
+      shell: options.shell
+    });
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      output: [error.stdout, error.stderr].filter(Boolean).join('\n').trim() || error.message
+    };
+  }
+}
+
+function isPreferredOpenClawPanelUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  try {
+    const parsed = new URL(url.trim());
+    const pathname = parsed.pathname || '/';
+    if (/^\/chat\b/i.test(pathname) || /^\/session\b/i.test(pathname)) return false;
+    if (parsed.searchParams.get('session')) return false;
+    return pathname === '/' || pathname === '' || parsed.searchParams.has('token') || parsed.searchParams.has('auth');
+  } catch {
+    return false;
+  }
+}
 
 function parseOpenclawDashboardUrlFromJson(payload) {
   if (!payload || typeof payload !== 'object') return null;
 
   const queue = [payload];
+  const fallbackUrls = [];
   while (queue.length) {
     const current = queue.shift();
     if (!current || typeof current !== 'object') continue;
 
     for (const [key, value] of Object.entries(current)) {
       if (typeof value === 'string') {
+        const trimmed = value.trim();
+        const isHttpUrl = /^https?:\/\/\S+/i.test(trimmed);
         const isDashboardKey = /dashboard/i.test(key);
-        const looksLikeDashboardUrl = /^https?:\/\/\S+/i.test(value) && /dashboard|token=|auth=/.test(value);
-        if (isDashboardKey && /^https?:\/\/\S+/i.test(value)) return value.trim();
-        if (looksLikeDashboardUrl) return value.trim();
+        const looksLikePanelUrl = isHttpUrl && isPreferredOpenClawPanelUrl(trimmed);
+        if (isDashboardKey && looksLikePanelUrl) return trimmed;
+        if (looksLikePanelUrl) return trimmed;
+        if (isHttpUrl) fallbackUrls.push(trimmed);
       } else if (value && typeof value === 'object') {
         queue.push(value);
       }
     }
   }
 
-  return null;
+  return fallbackUrls.find(isPreferredOpenClawPanelUrl) || null;
 }
 
 function parseOpenclawDashboardUrlFromText(output) {
   if (!output) return null;
   const match = output.match(/Dashboard:\s+(https?:\/\/\S+)/i);
-  return match ? match[1] : null;
+  if (match && isPreferredOpenClawPanelUrl(match[1])) return match[1];
+  const urls = output.match(/https?:\/\/[^\s'"]+/ig) || [];
+  const preferred = urls.find((url) => isPreferredOpenClawPanelUrl(url));
+  return preferred || null;
+}
+
+function getOpenClawDashboardFallbackUrl() {
+  const port = Number(process.env.OPENCLAW_DASHBOARD_PORT || process.env.OPENCLAW_PORT || 29135);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
+  return `http://127.0.0.1:${port}`;
 }
 
 const quickChannelSessions = new Map();
@@ -316,6 +1263,78 @@ function serializeQuickConfigSession(session, includeQr = false) {
 
 function startServer(port = 3456, devMode = false) {
   const app = express();
+  const clawhubBootstrap = {
+    status: isClawHubAvailable() ? 'ready' : 'idle',
+    detail: isClawHubAvailable() ? 'ClawHub CLI 已可用' : '等待自动准备 ClawHub CLI',
+    error: '',
+    diagnostics: '',
+    startedAt: null,
+    finishedAt: null,
+    installed: false
+  };
+
+  const serializeClawHubBootstrap = () => {
+    const probe = probeClawHubAvailability();
+    const available = !!probe.available;
+    return {
+      status: available ? 'ready' : clawhubBootstrap.status,
+      detail: available ? 'ClawHub CLI 已就绪' : clawhubBootstrap.detail,
+      error: available ? '' : clawhubBootstrap.error,
+      diagnostics: probe.diagnostics || clawhubBootstrap.diagnostics || '',
+      startedAt: clawhubBootstrap.startedAt,
+      finishedAt: clawhubBootstrap.finishedAt,
+      installed: available,
+      path: available && probe.command !== 'clawhub' ? probe.command : null,
+      autoInstalled: !!clawhubBootstrap.installed
+    };
+  };
+
+  const ensureClawHubBootstrap = () => {
+    const probe = probeClawHubAvailability();
+    if (probe.available) {
+      clawhubBootstrap.status = 'ready';
+      clawhubBootstrap.detail = 'ClawHub CLI 已可用';
+      clawhubBootstrap.error = '';
+      clawhubBootstrap.diagnostics = probe.diagnostics || '';
+      clawhubBootstrap.finishedAt = Date.now();
+      return;
+    }
+
+    if (clawhubBootstrap.status === 'running') {
+      return;
+    }
+
+    clawhubBootstrap.status = 'running';
+    clawhubBootstrap.detail = '首次启动，正在自动准备 ClawHub CLI...';
+    clawhubBootstrap.error = '';
+    clawhubBootstrap.startedAt = Date.now();
+
+    setImmediate(() => {
+      try {
+        const result = installClawHubCLI();
+        clawhubBootstrap.finishedAt = Date.now();
+        if (result.success) {
+          clawhubBootstrap.status = 'ready';
+          clawhubBootstrap.installed = !!result.installed;
+          clawhubBootstrap.detail = result.installed ? '首次启动已自动安装 ClawHub CLI' : 'ClawHub CLI 已可用';
+          clawhubBootstrap.error = '';
+          clawhubBootstrap.diagnostics = result.diagnostics || '';
+        } else {
+          clawhubBootstrap.status = 'error';
+          clawhubBootstrap.installed = false;
+          clawhubBootstrap.detail = 'ClawHub CLI 自动准备失败';
+          clawhubBootstrap.error = result.error || '未知错误';
+          clawhubBootstrap.diagnostics = result.diagnostics || '';
+        }
+      } catch (error) {
+        clawhubBootstrap.status = 'error';
+        clawhubBootstrap.detail = 'ClawHub CLI 自动准备失败';
+        clawhubBootstrap.error = error.message;
+        clawhubBootstrap.diagnostics = '';
+        clawhubBootstrap.finishedAt = Date.now();
+      }
+    });
+  };
 
   app.use(express.json());
   app.use(express.static(path.join(__dirname, '..', 'public')));
@@ -323,16 +1342,72 @@ function startServer(port = 3456, devMode = false) {
   // ========== API 路由 ==========
 
   // 系统状态
+  app.get('/api/status-lite', (req, res) => {
+    const timer = createRequestTimer('/api/status-lite', req);
+    try {
+      const lifecycle = getLiteOpenClawLifecycle();
+      const payload = {
+        os: getOS(),
+        nodeVersion: process.version,
+        nodeOk: checkNodeVersion(),
+        openclawInstalled: lifecycle.installed,
+        openclawVersion: lifecycle.version,
+        openclawPath: lifecycle.path,
+        gatewayRunning: lifecycle.gatewayRunning,
+        openclawLifecycle: lifecycle,
+        isRoot: isRoot(),
+        clawhubBootstrap: serializeClawHubBootstrap()
+      };
+      timer.log('ok', { installed: payload.openclawInstalled, stage: lifecycle.stage || 'unknown', lite: true });
+      res.json(payload);
+    } catch (err) {
+      timer.log('error', { error: err.message, lite: true });
+      throw err;
+    }
+  });
+
   app.get('/api/status', (req, res) => {
-    res.json({
-      os: getOS(),
-      nodeVersion: process.version,
-      nodeOk: checkNodeVersion(),
-      openclawInstalled: isOpenClawInstalled(),
-      openclawVersion: getOpenClawVersion(),
-      gatewayRunning: isGatewayRunning(),
-      isRoot: isRoot()
-    });
+    const timer = createRequestTimer('/api/status', req);
+    try {
+      if (cachedStatusPayload && (Date.now() - cachedStatusAt) < STATUS_CACHE_TTL_MS) {
+        timer.log('ok', { cacheHit: true, stage: cachedStatusPayload.openclawLifecycle?.stage || 'unknown' });
+        return res.json(cachedStatusPayload);
+      }
+
+      const finishInspect = timer.step('inspectOpenClawState');
+      const openclawState = inspectOpenClawState();
+      finishInspect({
+        installed: !!openclawState?.installed,
+        configReady: !!openclawState?.configReady,
+        gatewayRunning: !!openclawState?.gatewayRunning
+      });
+
+      const finishLifecycle = timer.step('buildOpenClawLifecycle');
+      const lifecycle = applyOpenClawLifecycleSticky(buildOpenClawLifecycle(openclawState));
+      finishLifecycle({ stage: lifecycle.stage || 'unknown', sticky: !!lifecycle.sticky });
+
+      const payload = {
+        os: getOS(),
+        nodeVersion: process.version,
+        nodeOk: checkNodeVersion(),
+        openclawInstalled: lifecycle.installed,
+        openclawVersion: lifecycle.version,
+        openclawPath: lifecycle.path,
+        gatewayRunning: lifecycle.gatewayRunning,
+        openclawLifecycle: lifecycle,
+        isRoot: isRoot(),
+        clawhubBootstrap: serializeClawHubBootstrap()
+      };
+      cachedStatusPayload = payload;
+      cachedStatusAt = Date.now();
+      cachedLiteLifecycle = lifecycle;
+      cachedLiteLifecycleAt = cachedStatusAt;
+      timer.log('ok', { installed: payload.openclawInstalled, stage: lifecycle.stage || 'unknown', cacheHit: false });
+      res.json(payload);
+    } catch (err) {
+      timer.log('error', { error: err.message });
+      throw err;
+    }
   });
 
   // 获取配置摘要
@@ -353,8 +1428,11 @@ function startServer(port = 3456, devMode = false) {
     return new Promise((resolve) => {
       let reqUrl, reqBody, reqHeaders;
 
-      if (provider === 'anthropic') {
-        reqUrl = 'https://api.anthropic.com/v1/messages';
+      if (provider === 'anthropic' || provider === 'minimax') {
+        const cleanBaseUrl = (String(baseUrl || '').trim().replace(/\/+$/, '')) || getDefaultBaseUrl(provider) || (provider === 'minimax'
+          ? 'https://api.minimaxi.com/anthropic'
+          : 'https://api.anthropic.com');
+        reqUrl = cleanBaseUrl + '/v1/messages';
         reqBody = JSON.stringify({
           model: model,
           max_tokens: 1,
@@ -367,7 +1445,11 @@ function startServer(port = 3456, devMode = false) {
         };
       } else {
         // OpenAI 兼容接口
-        const cleanBaseUrl = (baseUrl || '').replace(/\/+$/, '');
+        const cleanBaseUrl = (String(baseUrl || '').trim().replace(/\/+$/, '')) || getDefaultBaseUrl(provider);
+        if (!cleanBaseUrl) {
+          resolve({ valid: false, error: `未找到 ${provider} 的默认 baseUrl` });
+          return;
+        }
         reqUrl = cleanBaseUrl + '/chat/completions';
         reqBody = JSON.stringify({
           model: model,
@@ -423,33 +1505,49 @@ function startServer(port = 3456, devMode = false) {
   }
 
   app.post('/api/models/verify', async (req, res) => {
+    const timer = createRequestTimer('/api/models/verify', req);
     try {
       const { provider, model, apiKey, baseUrl } = req.body;
       if (!provider || !model || !apiKey) {
+        timer.log('bad_request', { provider: provider || null, model: model || null });
         return res.status(400).json({ success: false, error: '缺少必要参数' });
       }
+      const finishVerify = timer.step('verifyApiKey', { provider, model });
       const result = await verifyApiKey(provider, model, apiKey, baseUrl);
+      finishVerify({ valid: !!result.valid, hasError: !!result.error });
+      timer.log('ok', { provider, model, valid: !!result.valid });
       res.json({ success: result.valid, error: result.error || null });
     } catch (err) {
+      timer.log('error', { error: err.message });
       res.status(500).json({ success: false, error: err.message });
     }
   });
 
   // 添加模型
   app.post('/api/models/add', async (req, res) => {
+    const timer = createRequestTimer('/api/models/add', req);
     try {
-      const { provider, model, apiKey, baseUrl } = req.body;
+      const { provider, model, apiKey, baseUrl, skipVerify } = req.body;
       if (!provider || !model || !apiKey) {
+        timer.log('bad_request', { provider: provider || null, model: model || null });
         return res.status(400).json({ success: false, error: '缺少必要参数' });
       }
-      // 先验证 API Key
-      const verify = await verifyApiKey(provider, model, apiKey, baseUrl);
-      if (!verify.valid) {
-        return res.status(400).json({ success: false, error: 'API Key 验证失败: ' + (verify.error || '未知错误') });
+      if (!skipVerify) {
+        const finishVerify = timer.step('verifyApiKey', { provider, model });
+        const verify = await verifyApiKey(provider, model, apiKey, baseUrl);
+        finishVerify({ valid: !!verify.valid, hasError: !!verify.error });
+        if (!verify.valid) {
+          timer.log('verify_failed', { provider, model });
+          return res.status(400).json({ success: false, error: 'API Key 验证失败: ' + (verify.error || '未知错误') });
+        }
+      } else {
+        timer.log('skip_verify', { provider, model });
       }
       const result = updateModelConfig({ provider, model, apiKey, baseUrl });
+      timer.log('ok', { provider, model, skipVerify: !!skipVerify });
       res.json({ success: true, config: result });
     } catch (err) {
+      timer.log('error', { error: err.message });
       res.status(500).json({ success: false, error: err.message });
     }
   });
@@ -854,7 +1952,7 @@ function startServer(port = 3456, devMode = false) {
       send({ type: 'progress', ...progress });
     });
 
-    send({ type: 'done', success: result.success });
+    send({ type: 'done', success: result.success, partial: !!result.partial, state: result.state || null });
     res.end();
   });
 
@@ -1032,36 +2130,73 @@ function startServer(port = 3456, devMode = false) {
 
   // 检查 ClawHub 是否可用
   app.get('/api/skills/status', (req, res) => {
-    res.json({ available: isClawHubAvailable() });
+    const timer = createRequestTimer('/api/skills/status', req);
+    try {
+      const finishProbe = timer.step('probeClawHubAvailability');
+      const probe = probeClawHubAvailability();
+      finishProbe({ available: !!probe.available, command: probe.command || null });
+      timer.log('ok', { available: !!probe.available });
+      res.json({
+        available: !!probe.available,
+        command: probe.command,
+        diagnostics: probe.diagnostics,
+        whereOutput: probe.whereOutput || '',
+        bootstrap: serializeClawHubBootstrap()
+      });
+    } catch (err) {
+      timer.log('error', { error: err.message });
+      throw err;
+    }
   });
 
   // 安装 ClawHub CLI
   app.post('/api/skills/setup', (req, res) => {
     const result = installClawHubCLI();
+    if (result.success) {
+      clawhubBootstrap.status = 'ready';
+      clawhubBootstrap.detail = result.installed ? 'ClawHub CLI 已安装完成' : 'ClawHub CLI 已可用';
+      clawhubBootstrap.error = '';
+      clawhubBootstrap.diagnostics = result.diagnostics || '';
+      clawhubBootstrap.installed = !!result.installed;
+      clawhubBootstrap.finishedAt = Date.now();
+    } else {
+      clawhubBootstrap.status = 'error';
+      clawhubBootstrap.detail = 'ClawHub CLI 安装失败';
+      clawhubBootstrap.error = result.error || '未知错误';
+      clawhubBootstrap.diagnostics = result.diagnostics || '';
+      clawhubBootstrap.finishedAt = Date.now();
+    }
     res.json(result);
   });
 
   // 搜索 Skills（带 10 秒缓存）
   const skillCache = new Map();
   app.get('/api/skills/search', (req, res) => {
+    const timer = createRequestTimer('/api/skills/search', req);
     const query = req.query.q;
     if (!query) {
+      timer.log('bad_request');
       return res.status(400).json({ success: false, error: '缺少搜索关键词' });
     }
     // 检查缓存
     const cached = skillCache.get(query);
     if (cached && Date.now() - cached.time < 10000) {
+      timer.log('ok', { query, cacheHit: true, resultCount: Array.isArray(cached.data?.skills) ? cached.data.skills.length : null });
       return res.json(cached.data);
     }
+    const finishSearch = timer.step('searchClawHubSkills', { query });
     const result = searchClawHubSkills(query);
+    finishSearch({ success: !!result.success, hasError: !!result.error, resultCount: Array.isArray(result.skills) ? result.skills.length : null });
     // 检测限流错误，返回友好提示
     if (!result.success && result.error && result.error.includes('Rate limit')) {
+      timer.log('rate_limited', { query });
       return res.json({ success: false, error: '搜索太频繁，请稍后再试（每分钟限30次）' });
     }
     // 只缓存成功的结果
     if (result.success) {
       skillCache.set(query, { data: result, time: Date.now() });
     }
+    timer.log('ok', { query, cacheHit: false, success: !!result.success });
     res.json(result);
   });
 
@@ -1082,43 +2217,102 @@ function startServer(port = 3456, devMode = false) {
 
   // 检查依赖状态
   app.get('/api/tools/status', (req, res) => {
-    const result = {};
-
-    // Node.js — 优先用 which/where，找不到就用 process.version
-    let nodeWhich = '';
+    const timer = createRequestTimer('/api/tools/status', req);
     try {
-      const whichCmd = os.platform() === 'win32'
-        ? 'where node 2>nul || echo ""'
-        : 'which node 2>/dev/null || command -v node 2>/dev/null || echo ""';
-      nodeWhich = execSync(whichCmd, {
-        encoding: 'utf8', timeout: 5000
-      }).trim();
-    } catch {}
-
-    if (nodeWhich) {
-      try {
-        const nodeVer = execSync('node -v 2>/dev/null', { encoding: 'utf8', timeout: 5000 }).trim();
-        result.node = { installed: true, version: nodeVer, path: nodeWhich };
-      } catch {
-        result.node = { installed: true, version: process.version, path: nodeWhich };
+      if (cachedToolsStatusPayload && (Date.now() - cachedToolsStatusAt) < TOOLS_STATUS_CACHE_TTL_MS) {
+        timer.log('ok', { cacheHit: true, openclawInstalled: !!cachedToolsStatusPayload.openclaw?.installed });
+        return res.json(cachedToolsStatusPayload);
       }
-    } else if (process.version) {
-      result.node = { installed: true, version: process.version, path: process.execPath };
-    } else {
-      result.node = { installed: false };
+
+      const result = {};
+
+      const finishNode = timer.step('getNodeInstallationInfo');
+      const nodeInfo = getNodeInstallationInfo({ allowProcessFallback: false });
+      finishNode({ installed: !!nodeInfo.installed, path: nodeInfo.path || null });
+
+      const finishRuntime = timer.step('getRuntimeNodeInfo');
+      const runtimeNode = getRuntimeNodeInfo();
+      finishRuntime({ installed: !!runtimeNode.installed, path: runtimeNode.path || null });
+
+      const finishRegistry = timer.step('getWindowsNodeRegistryEntries');
+      const windowsNodeRegistryEntries = os.platform() === 'win32' ? getWindowsNodeRegistryEntries() : [];
+      finishRegistry({ count: windowsNodeRegistryEntries.length });
+      const nodeState = os.platform() === 'win32'
+        ? getWindowsNodeUninstallState(nodeInfo, runtimeNode, windowsNodeRegistryEntries)
+        : {
+            installed: !!nodeInfo.installed,
+            blocked: !nodeInfo.installed,
+            reason: nodeInfo.installed ? null : 'absent',
+            status: nodeInfo.installed ? 'removable' : 'absent',
+            detail: nodeInfo.installed ? '' : '未检测到可卸载的 Node.js。',
+            diagnostics: {}
+          };
+      result.node = {
+        installed: !!nodeInfo.installed,
+        version: nodeInfo.version || null,
+        path: nodeInfo.path || null,
+        source: nodeInfo.source || null,
+        via: nodeInfo.via || null,
+        uninstallBlocked: nodeState.blocked,
+        uninstallBlockReason: nodeState.reason,
+        uninstallStatus: nodeState.status,
+        uninstallHint: nodeState.detail,
+        runtimeInUse: nodeState.reason === 'runtime_in_use',
+        runtimeIsolated: nodeState.reason === 'runtime_only',
+        runtimeNotIsolated: nodeState.reason === 'runtime_not_isolated',
+        systemManaged: nodeState.reason === 'system_managed',
+        diagnostics: nodeState.diagnostics
+      };
+      result.runtimeNode = runtimeNode.installed
+        ? { installed: true, version: runtimeNode.version, path: runtimeNode.path, source: runtimeNode.source }
+        : { installed: false };
+
+      const finishClawHub = timer.step('probeClawHubAvailability');
+      const clawhubProbe = probeClawHubAvailability();
+      finishClawHub({ available: !!clawhubProbe.available, command: clawhubProbe.command || null });
+      result.clawhub = {
+        installed: !!clawhubProbe.available,
+        path: clawhubProbe.command && clawhubProbe.command !== 'clawhub' ? clawhubProbe.command : null,
+        diagnostics: clawhubProbe.diagnostics,
+        whereOutput: clawhubProbe.whereOutput || '',
+        bootstrap: serializeClawHubBootstrap()
+      };
+
+      const finishOpenClaw = timer.step('inspectOpenClawState');
+      const openclawState = inspectOpenClawState();
+      finishOpenClaw({
+        installed: !!openclawState.installed,
+        configReady: !!openclawState.configReady,
+        gatewayRunning: !!openclawState.gatewayRunning
+      });
+
+      const finishLifecycle = timer.step('buildOpenClawLifecycle');
+      const lifecycle = applyOpenClawLifecycleSticky(buildOpenClawLifecycle(openclawState));
+      finishLifecycle({ stage: lifecycle.stage || 'unknown', sticky: !!lifecycle.sticky });
+      result.openclaw = {
+        installed: lifecycle.installed,
+        version: lifecycle.version,
+        path: lifecycle.path,
+        summary: lifecycle.summary,
+        lifecycle,
+        configExists: lifecycle.configExists,
+        configReady: lifecycle.configReady,
+        gatewayReady: lifecycle.gatewayReady,
+        gatewayRunning: lifecycle.gatewayRunning
+      };
+      cachedToolsStatusPayload = result;
+      cachedToolsStatusAt = Date.now();
+      timer.log('ok', {
+        openclawInstalled: !!result.openclaw.installed,
+        openclawStage: lifecycle.stage || 'unknown',
+        clawhubInstalled: !!result.clawhub.installed,
+        cacheHit: false
+      });
+      res.json(result);
+    } catch (err) {
+      timer.log('error', { error: err.message });
+      throw err;
     }
-
-    const { command: clawhubPath } = resolveClawHubBinary();
-    result.clawhub = {
-      installed: clawhubPath !== 'clawhub',
-      path: clawhubPath !== 'clawhub' ? clawhubPath : null
-    };
-
-    result.openclaw = {
-      installed: isOpenClawInstalled(),
-      version: getOpenClawVersion()
-    };
-    res.json(result);
   });
 
   // 卸载 Node.js — 先用 which 判断安装方式，再按方式卸载
@@ -1128,45 +2322,114 @@ function startServer(port = 3456, devMode = false) {
 
     // Windows: 走 Windows 卸载逻辑
     if (os.platform() === 'win32') {
-      // 1. 用 where 找到 node 路径
-      let whichPath = '';
-      try {
-        whichPath = execSync('where node 2>nul || echo ""', {
-          encoding: 'utf8', timeout: 5000
-        }).trim();
-      } catch {}
+      const nodeInfo = getNodeInstallationInfo({ allowProcessFallback: false });
+      const runtimeNode = getRuntimeNodeInfo();
+      const registryEntries = getWindowsNodeRegistryEntries();
+      const nodeState = getWindowsNodeUninstallState(nodeInfo, runtimeNode, registryEntries);
 
-      if (!whichPath) {
-        return res.json({ success: false, error: '未找到 node，可能已经卸载了' });
+      if (!nodeInfo.installed && registryEntries.length === 0) {
+        return res.json({ success: false, error: nodeState.detail || '未找到 node，可能已经卸载了' });
       }
-      logs.push(`检测到 node 路径: ${whichPath}`);
 
-      // 2. 尝试通过 winget / choco / scoop 卸载
-      // winget
-      try {
-        execSync('winget uninstall OpenJS.NodeJS --silent', { timeout: 60000, shell: 'cmd.exe' });
-        logs.push('通过 winget 卸载完成');
-        return res.json({ success: true, message: `Node.js 已通过 winget 卸载\n${logs.join('\n')}` });
-      } catch { logs.push('winget 未安装或卸载失败'); }
+      if (nodeState.reason === 'runtime_in_use') {
+        return res.json({
+          success: false,
+          error: [
+            '检测到当前 ClawBox 正在使用 Windows 系统 Node.js 运行。',
+            '为避免卸载动作直接中断当前服务，本轮已阻止在请求链路内执行自动卸载。',
+            '',
+            `当前运行时: ${runtimeNode.path || '未知路径'} ${runtimeNode.version || ''}`.trim(),
+            '请先切换到独立 runtime node / 打包运行时后，再卸载系统 Node.js；或在系统“已安装的应用”里手动卸载。'
+          ].join('\n')
+        });
+      }
 
-      // Chocolatey
-      try {
-        execSync('choco uninstall nodejs -y', { timeout: 60000, shell: 'cmd.exe' });
-        logs.push('通过 Chocolatey 卸载完成');
-        return res.json({ success: true, message: `Node.js 已通过 Chocolatey 卸载\n${logs.join('\n')}` });
-      } catch { logs.push('Chocolatey 未安装或卸载失败'); }
+      if (nodeState.reason === 'runtime_not_isolated') {
+        return res.json({
+          success: false,
+          error: [
+            '当前 ClawBox 运行时尚未与系统 Node.js 彻底隔离。',
+            '为了避免再出现“看起来能卸载，其实会把自己脚下地板抽掉”的假承诺，本轮已禁用自动卸载。',
+            '',
+            `当前运行时: ${runtimeNode.path || '未知路径'} ${runtimeNode.version || ''}`.trim(),
+            `检测到系统 Node.js: ${nodeInfo.path || '未知路径'} ${nodeInfo.version || ''}`.trim(),
+            '请先切到已确认独立的 runtime node / 打包运行时，或改为系统“已安装的应用”里手动卸载。'
+          ].join('\n')
+        });
+      }
 
-      // Scoop
-      try {
-        execSync('scoop uninstall nodejs -p', { timeout: 60000, shell: 'cmd.exe' });
-        logs.push('通过 Scoop 卸载完成');
-        return res.json({ success: true, message: `Node.js 已通过 Scoop 卸载\n${logs.join('\n')}` });
-      } catch { logs.push('Scoop 未安装或卸载失败'); }
+      if (nodeState.reason === 'system_managed') {
+        return res.json({
+          success: false,
+          error: [
+            '当前检测到的是 Windows 系统级 Node.js 安装。',
+            '为避免官方卸载器在当前请求链路内打断 ClawBox，本轮已禁用直接自动卸载。',
+            '',
+            `检测路径: ${nodeInfo.path || '未知路径'}`,
+            registryEntries[0]?.displayName ? `安装项: ${registryEntries[0].displayName}` : '',
+            '请从系统“已安装的应用”或管理员 PowerShell 中手动卸载；待 runtime node 完整隔离后再恢复自动卸载。'
+          ].filter(Boolean).join('\n')
+        });
+      }
 
-      // 3. 所有包管理器都失败 — 提示用户手动卸载
+      logs.push(`检测到 node 路径: ${nodeInfo.path || '未解析到可执行文件'}`);
+      if (nodeInfo.version) logs.push(`检测到 node 版本: ${nodeInfo.version}`);
+      if (registryEntries[0]?.displayName) {
+        logs.push(`检测到注册表安装项: ${registryEntries[0].displayName}${registryEntries[0].displayVersion ? ` ${registryEntries[0].displayVersion}` : ''}`);
+      }
+
+      const attempts = [
+        { label: 'winget(OpenJS.NodeJS.LTS)', command: 'winget uninstall --id OpenJS.NodeJS.LTS --silent --accept-source-agreements', shell: 'cmd.exe' },
+        { label: 'winget(OpenJS.NodeJS)', command: 'winget uninstall --id OpenJS.NodeJS --silent --accept-source-agreements', shell: 'cmd.exe' },
+        { label: 'Chocolatey(nodejs-lts)', command: 'choco uninstall nodejs-lts -y', shell: 'cmd.exe' },
+        { label: 'Chocolatey(nodejs)', command: 'choco uninstall nodejs -y', shell: 'cmd.exe' },
+        { label: 'Scoop(nodejs-lts)', command: 'scoop uninstall nodejs-lts', shell: 'cmd.exe' },
+        { label: 'Scoop(nodejs)', command: 'scoop uninstall nodejs', shell: 'cmd.exe' }
+      ];
+
+      const registryEntry = registryEntries.find(entry => entry.quietUninstallString || entry.uninstallString);
+      if (registryEntry?.quietUninstallString) {
+        attempts.push({
+          label: '注册表 QuietUninstallString',
+          command: registryEntry.quietUninstallString,
+          shell: 'cmd.exe'
+        });
+      }
+      if (registryEntry?.uninstallString) {
+        const uninstallString = registryEntry.uninstallString.trim();
+        const productCodeMatch = uninstallString.match(/\{[0-9A-F-]+\}/i) || (registryEntry.productCode && registryEntry.productCode.match(/^\{[0-9A-F-]+\}$/i));
+        if (/msiexec/i.test(uninstallString) && productCodeMatch) {
+          attempts.push({
+            label: '官方 MSI 静默卸载',
+            command: `msiexec.exe /x ${productCodeMatch[0]} /qn /norestart`,
+            shell: 'cmd.exe'
+          });
+          attempts.push({
+            label: '官方 MSI 被动卸载',
+            command: `msiexec.exe /x ${productCodeMatch[0]} /passive /norestart`,
+            shell: 'cmd.exe'
+          });
+        }
+      }
+
+      for (const attempt of attempts) {
+        const result = tryExecCommand(attempt.command, { timeout: 120000, shell: attempt.shell });
+        if (!result.success) {
+          logs.push(`${attempt.label} 失败: ${result.output || '无输出'}`);
+          continue;
+        }
+
+        logs.push(`${attempt.label} 执行完成`);
+        const remainingNode = getNodeInstallationInfo({ allowProcessFallback: false });
+        const remainingRegistry = getWindowsNodeRegistryEntries();
+        if (!remainingNode.installed && remainingRegistry.length === 0) {
+          return res.json({ success: true, message: `Node.js 卸载完成\n${logs.join('\n')}` });
+        }
+      }
+
       return res.json({
         success: false,
-        error: `无法自动卸载 Node.js。\n\n请通过以下方式之一卸载：\n1. 设置 → 应用 → 搜索 "Node.js" → 卸载\n2. winget uninstall OpenJS.NodeJS\n3. choco uninstall nodejs -y\n\n检测到路径: ${whichPath}\n${logs.join('\n')}`
+        error: buildWindowsNodeManualHint(nodeInfo, registryEntries, logs)
       });
     }
 
@@ -1360,7 +2623,16 @@ function startServer(port = 3456, devMode = false) {
       if (!dir || !fs.existsSync(dir)) continue;
       try {
         const found = isWindows
-          ? execSync(`dir /s /b "${dir}\\clawhub.cmd" "${dir}\\clawhub.exe" "${dir}\\clawhub" 2>nul`, { encoding: 'utf8', timeout: 5000 }).trim()
+          ? spawnSync('cmd.exe', [
+              '/d',
+              '/s',
+              '/c',
+              `dir /s /b ${quoteWindowsCmdArg(path.join(dir, 'clawhub.cmd'))} ${quoteWindowsCmdArg(path.join(dir, 'clawhub.exe'))} ${quoteWindowsCmdArg(path.join(dir, 'clawhub'))} 2>nul`
+            ], {
+              encoding: 'utf8',
+              timeout: 5000,
+              env: getExtendedShellEnv()
+            }).stdout.trim()
           : execSync(`find "${dir}" -maxdepth 5 \\( -name "clawhub" -o -name "clawhub.js" \\) -type f 2>/dev/null`, { encoding: 'utf8', timeout: 5000 }).trim();
         if (found) {
           found.split('\n').filter(Boolean).forEach(p => whichPaths.push(p.trim()));
@@ -1440,10 +2712,29 @@ function startServer(port = 3456, devMode = false) {
 
     if (os.platform() === 'win32') {
       // Windows: 用 PowerShell 后台删除
-      const psScript = `Start-Sleep -Seconds 2; Remove-Item -Recurse -Force "${clawboxDir}" -ErrorAction SilentlyContinue`;
-      exec(`powershell -WindowStyle Hidden -Command "& { ${psScript} }"`, { shell: 'cmd.exe' });
-      res.json({ success: true, message: 'ClawBox 正在卸载...' });
-      setTimeout(() => process.exit(0), 500);
+      const scriptPath = path.join(os.tmpdir(), `clawbox-self-uninstall-${Date.now()}.ps1`);
+      const scriptContent = [
+        'param([string]$TargetDir, [string]$SelfPath)',
+        'Start-Sleep -Seconds 2',
+        'Remove-Item -LiteralPath $TargetDir -Recurse -Force -ErrorAction SilentlyContinue',
+        'Remove-Item -LiteralPath $SelfPath -Force -ErrorAction SilentlyContinue'
+      ].join('\r\n');
+
+      try {
+        fs.writeFileSync(scriptPath, scriptContent, 'utf8');
+        const proc = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', scriptPath, clawboxDir, scriptPath], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+          env: getExtendedShellEnv()
+        });
+        proc.unref();
+        res.json({ success: true, message: 'ClawBox 正在卸载...' });
+        setTimeout(() => process.exit(0), 500);
+      } catch (err) {
+        try { fs.unlinkSync(scriptPath); } catch {}
+        res.json({ success: false, error: `生成卸载脚本失败: ${err.message}` });
+      }
     } else {
       // Linux/macOS: 用 bash 脚本
       const scriptPath = '/tmp/clawbox_self_uninstall.sh';
@@ -1463,44 +2754,137 @@ rm -f "${scriptPath}"
     }
   });
 
+  // Windows 安装前清场 / 修复环境
+  app.post('/api/tools/repair-environment', (req, res) => {
+    try {
+      const report = buildWindowsRepairEnvironmentReport();
+      const hasBlockingDeleteFailures = (report.failedDeletes || []).some((item) => item.category !== 'missing');
+      const hasFailures = hasBlockingDeleteFailures || report.processKillFailures.length > 0;
+      res.json({
+        success: report.supported ? !hasFailures : false,
+        report
+      });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        error: `修复安装环境失败：${err.message}`
+      });
+    }
+  });
+
   // 获取 OpenClaw Dashboard URL
   app.get('/api/tools/openclaw-dashboard', (req, res) => {
+    const timer = createRequestTimer('/api/tools/openclaw-dashboard', req);
     try {
       let dashboardUrl = null;
+      let gatewayRunning = false;
+      let gatewayPort = null;
+      let gatewayToken = '';
+      let configAuth = null;
+      const statusOutputs = [];
+
+      const finishConfigRead = timer.step('readOpenClawDashboardAuthFromConfig');
+      configAuth = readOpenClawDashboardAuthFromConfig();
+      gatewayPort = configAuth.port || null;
+      gatewayToken = configAuth.token || '';
+      finishConfigRead({ port: gatewayPort || null, hasToken: !!gatewayToken, mode: configAuth.mode || null, configPath: configAuth.path || null });
+
+      const finishResolve = timer.step('resolveOpenClawPath');
+      const openclawPath = resolveOpenClawPath();
+      finishResolve({ path: openclawPath || null });
+
+      const finishInspect = timer.step('inspectOpenClawState');
+      const state = inspectOpenClawState();
+      finishInspect({
+        installed: !!state.installed,
+        gatewayRunning: !!state.gatewayRunning,
+        configReady: !!state.configReady
+      });
+
+      if (state.gatewayStatus?.data) {
+        gatewayRunning = !!state.gatewayRunning;
+        dashboardUrl = parseOpenclawDashboardUrlFromJson(state.gatewayStatus.data);
+        gatewayPort = findGatewayPortInJson(state.gatewayStatus.data) || gatewayPort;
+        gatewayToken = findGatewayTokenInJson(state.gatewayStatus.data) || gatewayToken;
+        dashboardUrl = normalizeOpenClawDashboardUrl(dashboardUrl, gatewayToken);
+      }
+      if (state.gatewayStatus?.stdout) statusOutputs.push(state.gatewayStatus.stdout);
+      if (state.gatewayStatus?.stderr) statusOutputs.push(state.gatewayStatus.stderr);
+      if (state.gatewayStatus?.error) statusOutputs.push(state.gatewayStatus.error);
+
+      if (dashboardUrl) {
+        timer.log('ok_cached', { found: true, port: gatewayPort || null, gatewayRunning, fastPath: false });
+        res.json({ success: true, url: dashboardUrl, port: gatewayPort, token: gatewayToken || null });
+        return;
+      }
 
       try {
-        const statusCmd = os.platform() === 'win32'
-          ? 'openclaw gateway status --json 2>nul'
-          : 'openclaw gateway status --json 2>/dev/null';
-        const jsonOutput = execSync(statusCmd, {
-          encoding: 'utf8',
-          timeout: 10000
-        }).trim();
+        const finishJsonStatus = timer.step('gateway status --json');
+        const jsonResult = runResolvedCliCommand(openclawPath || 'openclaw', ['gateway', 'status', '--json'], 4000);
+        finishJsonStatus({ ok: !!jsonResult.ok, status: jsonResult.status });
+        const jsonOutput = (jsonResult.stdout || jsonResult.stderr || '').trim();
         if (jsonOutput) {
+          statusOutputs.push(jsonOutput);
           try {
-            dashboardUrl = parseOpenclawDashboardUrlFromJson(JSON.parse(jsonOutput));
+            const payload = JSON.parse(jsonOutput);
+            dashboardUrl = parseOpenclawDashboardUrlFromJson(payload);
+            gatewayRunning = gatewayRunning || detectGatewayRunningFromPayload(payload);
+            gatewayPort = findGatewayPortInJson(payload) || gatewayPort;
+            gatewayToken = findGatewayTokenInJson(payload) || gatewayToken;
+            dashboardUrl = normalizeOpenClawDashboardUrl(dashboardUrl, gatewayToken);
           } catch {}
         }
       } catch {}
 
-      if (!dashboardUrl) {
-        const textStatusCmd = os.platform() === 'win32'
-          ? 'openclaw gateway status 2>nul'
-          : 'openclaw gateway status 2>/dev/null';
-        const textOutput = execSync(textStatusCmd, {
-          encoding: 'utf8',
-          timeout: 10000
-        });
-        dashboardUrl = parseOpenclawDashboardUrlFromText(textOutput);
-      }
-
       if (dashboardUrl) {
-        res.json({ success: true, url: dashboardUrl });
+        timer.log('ok_json', { found: true, port: gatewayPort || null, gatewayRunning });
+        res.json({ success: true, url: dashboardUrl, port: gatewayPort, token: gatewayToken || null });
         return;
       }
 
-      res.json({ success: false, error: '未找到 Dashboard 地址，Gateway 可能未运行' });
+      const needDeepProbe = !dashboardUrl && (!gatewayToken || !gatewayPort || gatewayRunning);
+      if (needDeepProbe) {
+        const finishDeepStatus = timer.step('gateway status --deep');
+        const textResult = runResolvedCliCommand(openclawPath || 'openclaw', ['gateway', 'status', '--deep'], 4000);
+        finishDeepStatus({ ok: !!textResult.ok, status: textResult.status });
+        const textOutput = textResult.output;
+        if (textOutput) statusOutputs.push(textOutput);
+        const deepUrl = parseOpenclawDashboardUrlFromText(textOutput);
+        if (deepUrl) dashboardUrl = dashboardUrl || deepUrl;
+        gatewayRunning = gatewayRunning || /\brunning\b/i.test(textOutput);
+        gatewayPort = gatewayPort || parseGatewayPortFromText(textOutput);
+        gatewayToken = gatewayToken || parseOpenClawTokenFromText(textOutput);
+        dashboardUrl = normalizeOpenClawDashboardUrl(dashboardUrl, gatewayToken);
+      }
+
+      if (!dashboardUrl) {
+        const combinedOutput = statusOutputs.join('\n');
+        dashboardUrl = parseOpenclawDashboardUrlFromText(combinedOutput);
+        gatewayPort = gatewayPort || parseGatewayPortFromText(combinedOutput);
+        gatewayToken = gatewayToken || parseOpenClawTokenFromText(combinedOutput);
+        dashboardUrl = normalizeOpenClawDashboardUrl(dashboardUrl, gatewayToken);
+      }
+
+      if (!dashboardUrl && configAuth.url && isPreferredOpenClawPanelUrl(configAuth.url)) {
+        dashboardUrl = normalizeOpenClawDashboardUrl(configAuth.url, configAuth.token || gatewayToken);
+      }
+
+      if (!dashboardUrl && gatewayPort) {
+        dashboardUrl = buildOpenClawDashboardUrlFromParts(gatewayPort, configAuth?.mode === 'none' ? '' : gatewayToken);
+      }
+
+      if (dashboardUrl) {
+        timer.log('ok', { found: true, port: gatewayPort || null, gatewayRunning });
+        res.json({ success: true, url: dashboardUrl, port: gatewayPort, token: gatewayToken || null });
+        return;
+      }
+
+      const portHint = gatewayPort ? `；当前检测到端口 ${gatewayPort}` : '';
+      const tokenHint = gatewayRunning && gatewayPort ? '，但暂未获取到 Dashboard token / URL' : '';
+      timer.log('not_found', { found: false, port: gatewayPort || null, gatewayRunning });
+      res.json({ success: false, error: gatewayRunning ? `Gateway 已运行${tokenHint}${portHint}，请先执行 openclaw gateway status --deep` : '未找到 Dashboard 地址，Gateway 可能未运行', port: gatewayPort, token: gatewayToken || null });
     } catch (err) {
+      timer.log('error', { error: err.message });
       res.json({ success: false, error: '无法获取 Dashboard 地址' });
     }
   });
@@ -1508,27 +2892,40 @@ rm -f "${scriptPath}"
   // 重启网关
   app.post('/api/gateway/restart', async (req, res) => {
     try {
-      const output = await new Promise((resolve, reject) => {
-        exec('openclaw gateway restart', { timeout: 30000 }, (err, stdout, stderr) => {
-          if (err) {
-            reject(new Error((stderr || stdout || err.message || '').trim()));
-          } else {
-            resolve((stdout || stderr || '').trim());
-          }
-        });
-      });
+      const openclawPath = resolveOpenClawPath();
+      if (os.platform() === 'win32') {
+        const restartResult = runResolvedCliCommand(openclawPath || 'openclaw', ['gateway', 'restart'], 90000);
+        const restartOutput = restartResult.output;
+        const observed = await observeWindowsGatewayRecovery(20000, 2000);
 
-      const start = Date.now();
-      let ready = false;
-      while (Date.now() - start < 20000) {
-        if (isGatewayRunning()) {
-          ready = true;
-          break;
+        if (observed.success) {
+          return res.json({
+            success: true,
+            output: restartOutput,
+            ready: true,
+            degraded: !!observed.degraded || !restartResult.ok,
+            note: !restartResult.ok
+              ? '官方 restart 返回了超时/健康检查错误，但 Gateway 实际已恢复可用。'
+              : (observed.degraded ? '官方 runtime 状态未完全同步，但 Gateway 已可用。' : null)
+          });
         }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        return res.json({
+          success: false,
+          error: restartOutput || restartResult.error?.message || '网关重启失败',
+          output: restartOutput
+        });
       }
 
-      if (!ready) {
+      const restartResult = runResolvedCliCommand(openclawPath || 'openclaw', ['gateway', 'restart'], 30000);
+      const output = restartResult.output;
+
+      if (!restartResult.ok) {
+        throw new Error(output || restartResult.error?.message || '网关重启失败');
+      }
+
+      const health = await waitForGatewayHealthy(20000);
+      if (!health.success) {
         return res.json({ success: false, error: '网关重启命令已执行，但服务未在 20 秒内恢复', output });
       }
 
@@ -1540,19 +2937,18 @@ rm -f "${scriptPath}"
 
   // 启动服务器
   return new Promise((resolve) => {
-    const server = app.listen(port, '0.0.0.0', () => {
-      const url = `http://127.0.0.1:${port}`;
+    const host = process.env.HOST || '127.0.0.1';
+    const server = app.listen(port, host, () => {
+      const url = `http://${host}:${port}`;
       console.log(`\n  📦 ClawBox 已启动: ${url}`);
       console.log(`  在浏览器中打开即可开始配置\n`);
 
       // 自动打开浏览器（跨平台）
-      const platform = process.platform;
-      const cmd = platform === 'darwin' ? 'open' :
-                  platform === 'win32' ? 'start' :
-                  'xdg-open';
-      if (!devMode) {
-        try { require('child_process').exec(`${cmd} ${url}`); } catch {}
+      if (shouldAutoOpenBrowser(devMode)) {
+        openBrowserUrl(url);
       }
+
+      ensureClawHubBootstrap();
 
       resolve(server);
     });
@@ -1565,4 +2961,20 @@ if (require.main === module) {
   startServer(3456, devMode);
 }
 
-module.exports = { startServer };
+module.exports = {
+  startServer,
+  __test: {
+    parseGatewayPortFromText,
+    findGatewayPortInJson,
+    findGatewayTokenInJson,
+    quoteWindowsCmdArg,
+    isPreferredOpenClawPanelUrl,
+    buildOpenClawDashboardUrlFromParts,
+    readOpenClawDashboardAuthFromConfig,
+    normalizeOpenClawDashboardUrl,
+    parseOpenclawDashboardUrlFromJson,
+    parseOpenclawDashboardUrlFromText,
+    parseOpenClawTokenFromText,
+    detectGatewayRunningFromPayload
+  }
+};

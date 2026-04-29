@@ -23,7 +23,7 @@
           <span class="hero-tag">Channels</span>
           <span class="hero-tag">Skills</span>
         </div>
-        <button class="btn-dashboard-header" onclick="openOpenclawDashboard()">打开OpenClaw面板</button>
+        <button class="btn-dashboard-header" id="btnOpenClawDashboard" onclick="openOpenclawDashboard()">打开OpenClaw面板</button>
       </div>
     </header>
 
@@ -42,7 +42,7 @@
         <span class="value" id="openclawInfo">检测中...</span>
       </div>
       <div class="status-item">
-        <span class="label">网关</span>
+        <span class="label label-with-action">网关 <button class="status-refresh-btn" id="btnRefreshGatewayStatus" onclick="refreshGatewayStatus()">刷新</button></span>
         <span class="value" id="gatewayInfo">检测中...</span>
       </div>
     </section>
@@ -229,7 +229,7 @@
               <p class="tool-status" id="toolNodeStatus">检测中...</p>
             </div>
             <div class="tool-actions">
-              <button class="btn btn-secondary btn-sm" onclick="uninstallNode()">卸载</button>
+              <button class="btn btn-secondary btn-sm" id="btnUninstallNode" onclick="uninstallNode()">卸载</button>
             </div>
           </div>
 
@@ -249,6 +249,7 @@
               <p class="tool-status" id="toolOpenclawStatus">检测中...</p>
             </div>
             <div class="tool-actions">
+              <button class="btn btn-secondary btn-sm" id="btnRepairEnvironment" onclick="repairEnvironment()">安装前清场</button>
               <button class="btn btn-secondary btn-sm" onclick="uninstallOpenclawTool()">卸载</button>
             </div>
           </div>

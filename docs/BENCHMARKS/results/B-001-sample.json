@@ -1,0 +1,25 @@
+{
+  "benchmark_id": "B-001",
+  "run_type": "quick",
+  "status": "pass",
+  "task_or_fixture": "TASK-9007",
+  "evidence": [
+    "续接时优先使用 tasks/TASK-9007/checkpoint.json 与 validation.json 作为当前状态依据",
+    "任务状态、done_when、blocked、rollback_anchor 均已在任务文件中可见"
+  ],
+  "fail_signals": [],
+  "metrics": {
+    "task_completed": true,
+    "bugfix_correct": true,
+    "regression_introduced": false,
+    "resumption_success": true,
+    "handoff_usable": true,
+    "validation_complete": true,
+    "reviewer_quality_ok": true,
+    "runbook_used": true,
+    "memory_misled": false,
+    "human_intervention_needed": false
+  },
+  "summary": "样例任务已能在不依赖长期记忆的前提下恢复当前状态与下一步，跨对话续接骨架成立。",
+  "recorded_at": "2026-04-05T21:55:00+08:00"
+}
